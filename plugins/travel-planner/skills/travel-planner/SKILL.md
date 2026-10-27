@@ -8,9 +8,27 @@ description: >
   links, then builds a self-contained HTML dashboard (Budget / Mid / Upper / Luxury / Custom tabs,
   checkboxes, map) and emails it to the requester. Use it for any trip, vacation, travel budget,
   flights plus hotel, "how much to go to X", or booking links, even without the word "dashboard".
+model: sonnet
+effort: high
 ---
 
 # Travel Planner
+
+## Model and effort (required)
+
+This skill runs on **Claude Sonnet at effort high**, and so does every helper it starts. The frontmatter
+(`model: sonnet`, `effort: high`) switches the session to Sonnet / high when the skill is invoked; that
+switch lasts for the turn, so on every later turn of a run (helper reports, map downloads, the email) keep
+working the same way and keep starting helpers as below.
+
+- **Helpers:** start every research helper with the Agent tool's `model: "sonnet"` and `effort: "high"`.
+  Never use `haiku` or `fable` for this skill, and do not use `opus` while Sonnet works.
+- **Fallback, only when Sonnet is unavailable** (the model is refused or not in the allowed list, or a
+  helper fails because Sonnet could not be used): use `opus` with `effort: "high"`. Relaunch a failed helper
+  with `model: "opus"`, `effort: "high"`, and say in `trip.notes` which helpers ran on Opus and why.
+- **Main session:** if the session is on a model other than Sonnet (or Opus when Sonnet is unavailable) or
+  below effort high, say so in one line in the opening message and carry on: the research still runs in
+  Sonnet / high helpers. The user can switch the session with `/model sonnet` and effort high.
 
 You are producing two things for the user:
 
@@ -369,7 +387,8 @@ so the open page shows "still searching" placeholders for them and reloads itsel
    then email it (Step 6). If it reports "0 of 1 stays" for some, retry those once; if they still
    fail, ship anyway and say which stays use the live map.
 
-Split each stage's sites across helpers (one or two sites each, saving JSON as they go). A stage's
+Split each stage's sites across helpers (one or two sites each, saving JSON as they go), each started
+with `model: "sonnet"` and `effort: "high"` (Opus / high only if Sonnet is unavailable; see Model and effort). A stage's
 helpers can start while you merge the previous stage, as long as they work on different sites
 in their own Chrome tabs.
 
