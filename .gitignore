@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.DS_Store
+# trip outputs people generate locally
+*-trip-dashboard.html
+*-email.eml
+trip.json

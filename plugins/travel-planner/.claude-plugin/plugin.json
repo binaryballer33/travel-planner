@@ -1,0 +1,21 @@
+{
+  "name": "travel-planner",
+  "version": "1.0.0",
+  "description": "Plan and price a whole trip from origin, destination and dates: researches flights, stays by neighborhood, cars, activities, day trips, buses and trains, restaurants, SIMs, transfers, weather and entry rules on the major booking sites, then builds a self-contained HTML dashboard with Budget / Mid / Upper / Luxury / Custom tiers, direct links and a map.",
+  "author": {
+    "name": "binaryballer33"
+  },
+  "homepage": "https://github.com/binaryballer33/travel-planner",
+  "repository": "https://github.com/binaryballer33/travel-planner",
+  "license": "MIT",
+  "keywords": [
+    "travel",
+    "trip",
+    "flights",
+    "hotels",
+    "airbnb",
+    "budget",
+    "itinerary",
+    "dashboard"
+  ]
+}
