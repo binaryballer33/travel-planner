@@ -603,7 +603,7 @@ def build_links(a) -> dict:
         },
         "Agoda": {
             "lodging": agoda_ht,
-            "flights": (f"https://www.agoda.com/flights/results?departureFrom={o}&departureTo={d}&departDate={checkin}{'' if ow else '&returnDate=' + checkout}&searchType={1 if ow else 2}&cabinType={ {'economy': 'Economy', 'premium': 'PremiumEconomy', 'business': 'Business', 'first': 'First'}[a.cabin] }&adults={adults}&sort=8  (the origin is usually dropped: type it in the 'Flying from' box, then Search)" if has_air else None),
+            "flights": (f"https://www.agoda.com/flights/results?departureFrom={o}&departureFromType=1&arrivalTo={d}&arrivalToType=0&departDate={checkin}{'' if ow else '&returnDate=' + checkout}&searchType={1 if ow else 2}&cabinType={ {'economy': 'Economy', 'premium': 'PremiumEconomy', 'business': 'Business', 'first': 'First'}[a.cabin] }&adults={adults}&sort=8  (typed origin/destination params worked on 28 Oct 2026; arrivalToType=0 searches the city's airports)" if has_air else None),
             "activities": f"https://www.agoda.com/activities/search?city={city_q}&currency={a.currency}" + FORM,
         },
         "Hostelworld": {

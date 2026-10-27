@@ -87,7 +87,7 @@ def main():
             if f.get("cabin") and not fl.get("cabin"):
                 fl["cabin"] = f["cabin"]
             fl["period"] = part(fl)
-            nos = " ".join(fl.get("flight_numbers") or [])
+            nos = " ".join(str(x) for x in ([fl["flight_numbers"]] if isinstance(fl.get("flight_numbers"), str) else (fl.get("flight_numbers") or [])) if x)  # helpers sometimes leave gaps or a bare string
             stops = fl.get("stops") or 0
             name = f"{fl.get('airline', 'Flight')} {nos} {fl.get('origin')}→{fl.get('destination')}, {fl['depart'][11:16] if fl.get('depart') else ''}, " \
                    f"{'nonstop' if not stops else str(stops) + ' stop' + ('s' if stops > 1 else '')}, {fl.get('cabin', 'economy').lower()}"

@@ -54,8 +54,9 @@ The skill runs on exactly four things from the user:
 - **Travelers: 1** unless the prompt says otherwise ("2 adults", "the three of us", a number after the dates). Do not ask.
 - **Check-out missing: check-in + 7 days** (one week).
 - **Trip type missing: round trip.** Only "one way" in the prompt makes it one way.
-- **Email the result** to the requester when the skill finishes (Step 6), at the address they gave in the
-  prompt; if none was given, ask for it once at the end (never guess an address).
+- **Email the result automatically** every time a run finishes (Step 6), without being asked and without
+  asking for confirmation, to the address the requester gave. **If no email address is known, ask for one**
+  (one short question) and send as soon as they answer; never guess an address.
 
 If origin, destination or check-in is missing, ask for just that one thing. A past check-in date is the
 only other thing worth a question (the user has twice chosen the same dates one year later: say that you
@@ -461,8 +462,13 @@ is the item list.
 
 ## Step 6 — Email the result
 
-When the run is done (the final build is delivered), email it to the requester: the address they gave, or ask
-for one once (skip the email if they decline). Build the message first:
+Every run ends with this step: when the final build is delivered, email it to the requester without being
+asked and without asking for confirmation, at the address they gave (pass it with `--to`); if none is known,
+ask for it (one question) and send when they reply (skip the email only if they decline).
+**Send only when everything is finished**: every stage researched and merged, the photos fetched, and the map
+places embedded for every default stay (stage 7 done, final build without `--partial` or `--map-pending`).
+If `fetch_pois.py` is still running, wait for it; if a stay still fails after one retry, do the final build,
+say in the email which stay loads its map live, and send. Build the message first:
 
 ```bash
 python3 ~/.claude/skills/travel-planner/scripts/email_results.py trip.json dashboard.html \
@@ -490,6 +496,10 @@ mid-run):
    `document.execCommand('insertHTML', false, trustedTypes.createPolicy('tpMail' + Date.now(), {createHTML: s => s}).createHTML(html))`
    (Gmail enforces Trusted Types; plain insertHTML is refused). Remove the helper input, `file_upload` the dashboard and
    trip JSON into Gmail's own "Attach files" input, check To / subject / attachments, then Send and confirm "Message sent".
+   Check the To field on screen (a screenshot of the compose header) before Send: the typed address can fail
+   to register when the compose window has not taken focus. Click the Recipients line, type the address,
+   press Enter, and confirm the recipient chip appears. After sending, open the copy in Sent to confirm the
+   recipient, the styled body and both attachments.
 4. None available: run the script with `--open` so the `.eml` opens in the default mail app, and tell the user
    plainly that it was prepared but not sent, with the path.
 
