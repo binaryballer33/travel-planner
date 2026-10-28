@@ -79,10 +79,19 @@ servers and no background processes.
   file. Claude sends it only to the address you gave, through a mail connector you have already set up
   (Gmail or Google Workspace, Resend) or your own signed-in Gmail in Chrome. The plugin stores no
   credentials and has no mail account of its own.
+- **The dashboard page** is a local HTML file. When you open it, your browser loads the map library from
+  cdnjs.cloudflare.com, map tiles from OpenStreetMap and the photos from the sites that host them, and a
+  stay without saved nearby places is looked up live from OpenStreetMap (Overpass, Nominatim) using that
+  stay's coordinates.
 - **Files**: dashboards and trip data are written to the folder you run Claude Code in. Nothing is uploaded
   anywhere else.
 
 No API keys are needed.
+
+## Privacy
+
+The plugin has no server, no tracking and no analytics, and the author receives none of your data. The full
+statement is in [PRIVACY.md](PRIVACY.md).
 
 ## Layout
 
@@ -93,6 +102,7 @@ skills/travel-planner/
   scripts/                     Python helpers (standard library only)
   references/                  per-site URL patterns, tier rules, trip JSON schema, research playbook
   assets/                      dashboard template, request form, sample trip JSON
+PRIVACY.md                     what the plugin handles and where it goes
 ```
 
 ## License
