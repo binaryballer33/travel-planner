@@ -113,7 +113,7 @@ any of that should change." Then start researching without waiting for a reply.
 ## Step 1 — Generate the starting search links
 
 ```bash
-python3 ~/.claude/skills/travel-planner/scripts/deeplinks.py "Los Angeles" Lisbon 11/10/2026 11/17/2026
+python3 ${CLAUDE_SKILL_DIR}/scripts/deeplinks.py "Los Angeles" Lisbon 11/10/2026 11/17/2026
 # optional: --adults 2 --children 1 --rooms 1 --cabin business --currency EUR --json
 ```
 
@@ -365,20 +365,20 @@ so the open page shows "still searching" placeholders for them and reloads itsel
    details): every leg's flight number, each layover's airport code, city and minutes, aircraft,
    legroom, and the economy / basic fare's carry-on and checked-bag allowance or fee. Add `entry`,
    `search_links` and the `coverage` cells you have, then
-   `python3 ~/.claude/skills/travel-planner/scripts/build_dashboard.py trip.json --partial lodging,car,transfer,activities,food,transport,sim,insurance -o <name>-trip-dashboard.html` → send.
+   `python3 ${CLAUDE_SKILL_DIR}/scripts/build_dashboard.py trip.json --partial lodging,car,transfer,activities,food,transport,sim,insurance -o <name>-trip-dashboard.html` → send.
 2. **Stays**: tourist neighborhoods, then stays per area and tier on every lodging site; tick one
-   default stay per tier. Then `python3 ~/.claude/skills/travel-planner/scripts/build_dashboard.py trip.json --partial car,transfer,activities,food,transport,sim,insurance -o …` → send.
+   default stay per tier. Then `python3 ${CLAUDE_SKILL_DIR}/scripts/build_dashboard.py trip.json --partial car,transfer,activities,food,transport,sim,insurance -o …` → send.
    Start the scripts that need no browser in the background now: `fetch_pois.py` for each default
    stay (write to a copy with `-o pois_out.json` so it never rewrites `trip.json` under you; merge
    its `nearby` when it exits), `fetch_weather.py`, and today's exchange rate.
 3. **Airport transfer, SIM / eSIM, entry rules**: short official pages; the transfer needs stage 2's
-   stays and the flight's arrival airport. `python3 ~/.claude/skills/travel-planner/scripts/build_dashboard.py trip.json --partial car,activities,food,transport,insurance -o …` → send.
+   stays and the flight's arrival airport. `python3 ${CLAUDE_SKILL_DIR}/scripts/build_dashboard.py trip.json --partial car,activities,food,transport,insurance -o …` → send.
 4. **Rental cars, then buses, trains & metro** (same-country trips): car pick-up starts after the
    flight lands; the ground card compares buses with stage 1's cheapest flight, and the bus sites
-   also show the regional operators stage 5 needs. `python3 ~/.claude/skills/travel-planner/scripts/build_dashboard.py trip.json --partial activities,food,insurance -o …` → send.
+   also show the regional operators stage 5 needs. `python3 ${CLAUDE_SKILL_DIR}/scripts/build_dashboard.py trip.json --partial activities,food,insurance -o …` → send.
 5. **Activities, then popular day trips**: the activity sites already list the day tours with prices
    and ratings, and stage 4 gave the bus operators and fares; run `fetch_dish_images.py` for the
-   day-trip photos. `python3 ~/.claude/skills/travel-planner/scripts/build_dashboard.py trip.json --partial food,insurance -o …` → send.
+   day-trip photos. `python3 ${CLAUDE_SKILL_DIR}/scripts/build_dashboard.py trip.json --partial food,insurance -o …` → send.
 6. **Local food, then best restaurants** (one Google Maps session; restaurant distances use stage 2's
    stays), then daily spend, insurance and curated hospitals. Build with `--map-pending` if the map
    places are still downloading, else the normal build → verify → send.
@@ -422,7 +422,7 @@ every category you searched, the URL of that site's full results page for the ro
 guests, so the user can redo any search by hand later. Start from
 
 ```bash
-python3 ~/.claude/skills/travel-planner/scripts/deeplinks.py MCO GIG 04/01/2027 05/01/2027 --one-way --search-links
+python3 ${CLAUDE_SKILL_DIR}/scripts/deeplinks.py MCO GIG 04/01/2027 05/01/2027 --one-way --search-links
 ```
 
 then replace every entry that still carries a "fill the form" note with the results URL you copied
@@ -436,7 +436,7 @@ Start `scripts/fetch_pois.py trip.json --stay-id <default stay>` in the backgrou
 tier's default stay (step 3), send the `--map-pending` build while it runs, then once it exits:
 
 ```bash
-python3 ~/.claude/skills/travel-planner/scripts/build_dashboard.py trip.json -o lisbon-2026-11-trip-dashboard.html
+python3 ${CLAUDE_SKILL_DIR}/scripts/build_dashboard.py trip.json -o lisbon-2026-11-trip-dashboard.html
 ```
 
 The script validates the JSON (required fields, dates, tier and category ids, homepage links),
@@ -490,7 +490,7 @@ If `fetch_pois.py` is still running, wait for it; if a stay still fails after on
 say in the email which stay loads its map live, and send. Build the message first:
 
 ```bash
-python3 ~/.claude/skills/travel-planner/scripts/email_results.py trip.json dashboard.html \
+python3 ${CLAUDE_SKILL_DIR}/scripts/email_results.py trip.json dashboard.html \
   --summary closing-summary.md --to you@example.com
 ```
 

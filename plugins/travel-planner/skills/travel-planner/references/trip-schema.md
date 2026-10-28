@@ -223,6 +223,8 @@ stay, and lists their distance.
 }
 ```
 
+(The bundled `assets/sample-trip.json` keeps only the 5 nearest places per category to stay small; real runs keep up to 40.)
+
 The dashboard renders this instantly when the user clicks the stay; stays without an entry fall back
 to a live Overpass lookup in the browser. The build script warns about every mapped stay that has
 no entry.
