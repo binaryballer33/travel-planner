@@ -22,13 +22,17 @@ Each run prints one JSON object on stdout:
       Claude process, to the listener and its descendants only), SIGKILL to
       whatever remains after the timeout, then confirms the port is free.
 
-Standard library only (Python 3.9). Processes come from `ps`, listeners and
-working directories from `lsof`. Command lines are never printed: a process is
-shown by a short name with anything that looks like a secret left out.
+Standard library only (Python 3.9). On macOS processes come from `ps`, listeners
+and working directories from `lsof`. On Windows (class WindowsSystem) they come
+from kernel32 and ntdll through ctypes and listeners from `netstat -ano`; Windows
+has no process groups, so a server is stopped as its listener and descendants.
+Command lines are never printed: a process is shown by a short name with
+anything that looks like a secret left out.
 """
 
 from __future__ import annotations
 
+import ctypes
 import json
 import os
 import re
@@ -36,16 +40,18 @@ import signal
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LOG_DIR = os.path.join(os.path.expanduser("~"), ".claude", "session-monitor", "logs")
+IS_WINDOWS = sys.platform == "win32"
+#: Windows has no SIGSTOP, SIGCONT or SIGKILL: the numbers are only names for what WindowsSystem.kill does.
 SIGNALS: Dict[str, int] = {
-    "STOP": int(signal.SIGSTOP),
-    "CONT": int(signal.SIGCONT),
+    "STOP": int(getattr(signal, "SIGSTOP", 19)),
+    "CONT": int(getattr(signal, "SIGCONT", 18)),
     "TERM": int(signal.SIGTERM),
-    "KILL": int(signal.SIGKILL),
+    "KILL": int(getattr(signal, "SIGKILL", 9)),
 }
 #: How far apart two readings of one process's start time may be (ps reports
 #: elapsed time in whole seconds) and still be the same process.
@@ -58,6 +64,8 @@ LOG_ROTATE_BYTES = 4_000_000
 SHELLS = {"sh", "bash", "zsh", "dash", "fish"}
 SHELL_MARK = "shell-snapshots/snapshot-"
 EXTRA_PATH = ["/opt/homebrew/bin", "/usr/local/bin", "~/.bun/bin", "~/.local/bin", "~/.cargo/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+
+EXTRA_PATH_WINDOWS = ["~\\.bun\\bin", "~\\.cargo\\bin", "~\\.local\\bin", "~\\AppData\\Roaming\\npm"]
 
 SECRET_ARG = re.compile(
     r"([A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|APIKEY|ACCESS_KEY|AUTH|CREDENTIAL)[A-Za-z0-9_]*)=\S+",
@@ -74,6 +82,21 @@ MONITOR_SCRIPT = re.compile(r"session-monitor/(?:[^/\s]+/)?sampler/(?:sampler|pr
 # --------------------------------------------------------------------------- #
 # Redaction and names
 # --------------------------------------------------------------------------- #
+
+
+def slashes(text: str) -> str:
+    """Windows paths with forward slashes, so one pattern reads both kinds."""
+    return text.replace("\\", "/")
+
+
+def is_abs(path: str) -> bool:
+    return path.startswith("/") or re.match(r"^[A-Za-z]:[\\/]", path) is not None or path.startswith("\\\\")
+
+
+def base_name(path: str) -> str:
+    """A program's name: its file name without folders, and without a Windows `.exe`."""
+    name = os.path.basename(slashes(path).rstrip("/"))
+    return name[:-4] if name.lower().endswith(".exe") else name
 
 
 def printable(text: str) -> str:
@@ -131,7 +154,7 @@ def read_shell_word(text: str, start: int) -> Optional[str]:
 
 def tool_shell_command(args: str) -> Optional[str]:
     """The command a Claude Code Bash tool shell runs: the word after `eval `."""
-    if SHELL_MARK not in args:
+    if SHELL_MARK not in slashes(args):
         return None
     at = args.rfind(" && eval ")
     if at < 0:
@@ -141,14 +164,14 @@ def tool_shell_command(args: str) -> Optional[str]:
 
 def short_name(exe: str, args: str) -> str:
     """A short, secret-free name: the program and up to three of its words."""
-    if exe.startswith("/"):
-        head = os.path.basename(exe)
+    if is_abs(exe):
+        head = base_name(exe)
         rest = args.split()
     else:
         parts = exe.split()
-        head = os.path.basename(parts[0]) if parts else ""
+        head = base_name(parts[0]) if parts else ""
         rest = parts[1:] + args.split()
-    if head in SHELLS:
+    if head.lower() in SHELLS:
         command = tool_shell_command(args)
         if command is not None:
             return f"$ {scrub(command)}"[:60]
@@ -169,8 +192,8 @@ def short_name(exe: str, args: str) -> str:
             token = URL_CREDS.sub(r"\1", token).split("?", 1)[0].split("#", 1)[0]
         elif "=" in token:
             continue
-        elif token.startswith("/") or token.startswith("~"):
-            token = os.path.basename(token.rstrip("/")) or token
+        elif is_abs(token) or token.startswith("~"):
+            token = base_name(token) or token
         if looks_secret(token):
             continue
         words.append(printable(token))
@@ -324,20 +347,21 @@ def parse_cwds(text: str) -> Dict[int, str]:
 
 def is_claude(row: Row) -> bool:
     """A Claude Code process: its program is `claude`, or Claude Code's own build."""
-    exe = row.exe
-    head = exe if exe.startswith("/") else (exe.split() or [""])[0]
-    base = os.path.basename(head)
+    exe = slashes(row.exe)
+    head = row.exe if is_abs(row.exe) else (row.exe.split() or [""])[0]
+    base = base_name(head).lower()
     if base == "claude" or "/claude.app/" in exe or "/claude-code/" in exe:
         return True
     if base in ("node", "bun"):
-        first = (row.args.split() or [""])[0]
-        return "/claude-code/" in first or os.path.basename(first) == "claude"
+        first = slashes((row.args.split() or [""])[0])
+        return "/claude-code/" in first or base_name(first).lower() == "claude"
     return False
 
 
 def is_monitor(row: Row, here: str = HERE) -> bool:
     """The monitor's own helpers: this folder's sampler and this script."""
-    return f"{here}/" in row.text or bool(MONITOR_SCRIPT.search(row.text))
+    text = slashes(row.text)
+    return f"{slashes(here)}/" in text or bool(MONITOR_SCRIPT.search(text))
 
 
 def ancestors(rows: Dict[int, Row], pid: int) -> List[int]:
@@ -643,6 +667,349 @@ class System:
         return child.pid
 
 
+class FileTime(ctypes.Structure):
+    _fields_ = [("lo", ctypes.c_uint32), ("hi", ctypes.c_uint32)]
+
+
+class ProcessEntry32(ctypes.Structure):
+    _fields_ = [
+        ("dwSize", ctypes.c_uint32),
+        ("cntUsage", ctypes.c_uint32),
+        ("th32ProcessID", ctypes.c_uint32),
+        ("th32DefaultHeapID", ctypes.c_size_t),
+        ("th32ModuleID", ctypes.c_uint32),
+        ("cntThreads", ctypes.c_uint32),
+        ("th32ParentProcessID", ctypes.c_uint32),
+        ("pcPriClassBase", ctypes.c_int32),
+        ("dwFlags", ctypes.c_uint32),
+        ("szExeFile", ctypes.c_wchar * 260),
+    ]
+
+
+class MemoryCounters(ctypes.Structure):
+    _fields_ = [
+        ("cb", ctypes.c_uint32),
+        ("PageFaultCount", ctypes.c_uint32),
+        ("PeakWorkingSetSize", ctypes.c_size_t),
+        ("WorkingSetSize", ctypes.c_size_t),
+        ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+        ("QuotaPagedPoolUsage", ctypes.c_size_t),
+        ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+        ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+        ("PagefileUsage", ctypes.c_size_t),
+        ("PeakPagefileUsage", ctypes.c_size_t),
+    ]
+
+
+#: Access rights: PROCESS_TERMINATE, PROCESS_SUSPEND_RESUME, PROCESS_QUERY_LIMITED_INFORMATION,
+#: PROCESS_QUERY_INFORMATION and PROCESS_VM_READ.
+ACCESS_TERMINATE = 0x0001
+ACCESS_SUSPEND_RESUME = 0x0800
+ACCESS_QUERY_LIMITED = 0x1000
+ACCESS_QUERY = 0x0400
+ACCESS_VM_READ = 0x0010
+ERROR_INVALID_PARAMETER = 87  # OpenProcess on a pid that no longer exists
+FILETIME_UNIX_EPOCH = 116444736000000000
+CREATE_NEW_PROCESS_GROUP = 0x00000200
+CREATE_NO_WINDOW = 0x08000000
+CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+STATE_FILE = os.path.join(os.path.dirname(LOG_DIR), "procs-state.json")
+
+
+def filetime_int(ft: FileTime) -> int:
+    return (ft.hi << 32) | ft.lo
+
+
+def parse_netstat_listeners(text: str) -> List[Listener]:
+    """`netstat -ano -p TCP` -> one listener per process and port. A listener is a
+    row whose remote side is the wildcard (`0.0.0.0:0` or `[::]:0`), so the
+    state's wording (it is translated) never matters."""
+    found: Dict[Tuple[int, int], Listener] = {}
+    for line in text.splitlines():
+        cols = line.split()
+        if len(cols) != 5 or cols[0].upper() != "TCP" or not cols[4].isdigit():
+            continue
+        if cols[2] not in ("0.0.0.0:0", "[::]:0", "*:*"):
+            continue
+        host, sep, port_text = cols[1].rpartition(":")
+        if not sep or not port_text.isdigit():
+            continue
+        pid, port = int(cols[4]), int(port_text)
+        address = host.strip("[]") or "*"
+        known = found.get((pid, port))
+        if known is None:
+            found[(pid, port)] = Listener(pid=pid, port=port, address=address, command="", uid=-1)
+        elif address not in known.address.split(" "):
+            found[(pid, port)] = Listener(pid=pid, port=port, address=f"{known.address} {address}", command="", uid=-1)
+    return sorted(found.values(), key=lambda one: (one.port, one.pid))
+
+
+class WindowsSystem(System):
+    """The real machine on Windows: kernel32 and ntdll through ctypes, `netstat -ano` for listeners.
+
+    Windows has no uids, so a process counts as the user's own when this helper
+    may terminate and suspend it (uid 0), else it is another user's (uid 1). It
+    has no process groups either: a row's pgid is the pid of the dev server this
+    helper launched above it (recorded in procs-state.json), else 0, which
+    `group_is_safe` refuses, so a server it did not start is stopped as its
+    listener and its descendants. A suspended process is remembered in the same
+    file, since Windows keeps no state letter to read it from.
+    """
+
+    def __init__(self) -> None:
+        self.kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+        self.ntdll = ctypes.WinDLL("ntdll")  # type: ignore[attr-defined]
+        k = self.kernel32
+        k.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+        k.OpenProcess.restype = ctypes.c_void_p
+        k.CloseHandle.argtypes = [ctypes.c_void_p]
+        k.TerminateProcess.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+        k.GetProcessTimes.argtypes = [ctypes.c_void_p] + [ctypes.POINTER(FileTime)] * 4
+        k.K32GetProcessMemoryInfo.argtypes = [ctypes.c_void_p, ctypes.POINTER(MemoryCounters), ctypes.c_uint32]
+        k.QueryFullProcessImageNameW.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_uint32)]
+        k.CreateToolhelp32Snapshot.argtypes = [ctypes.c_uint32, ctypes.c_uint32]
+        k.CreateToolhelp32Snapshot.restype = ctypes.c_void_p
+        k.Process32FirstW.argtypes = [ctypes.c_void_p, ctypes.POINTER(ProcessEntry32)]
+        k.Process32NextW.argtypes = [ctypes.c_void_p, ctypes.POINTER(ProcessEntry32)]
+        k.ReadProcessMemory.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t)]
+        self.ntdll.NtQueryInformationProcess.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint32)]
+        self.ntdll.NtQueryInformationProcess.restype = ctypes.c_int32
+        self.ntdll.NtSuspendProcess.argtypes = [ctypes.c_void_p]
+        self.ntdll.NtResumeProcess.argtypes = [ctypes.c_void_p]
+
+    # -- the state file ----------------------------------------------------- #
+
+    @staticmethod
+    def _load() -> Dict[str, Dict[str, int]]:
+        try:
+            with open(STATE_FILE, encoding="utf-8") as handle:
+                data = json.load(handle)
+            return {"launched": dict(data.get("launched", {})), "suspended": dict(data.get("suspended", {}))}
+        except (OSError, ValueError, AttributeError):
+            return {"launched": {}, "suspended": {}}
+
+    @staticmethod
+    def _save(state: Dict[str, Dict[str, int]]) -> None:
+        try:
+            os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
+            with open(STATE_FILE, "w", encoding="utf-8") as handle:
+                json.dump(state, handle)
+        except OSError:
+            pass
+
+    # -- processes ---------------------------------------------------------- #
+
+    def run(self, argv: List[str]) -> str:
+        try:
+            return subprocess.run(argv, capture_output=True, text=True, timeout=10, errors="replace", creationflags=CREATE_NO_WINDOW).stdout
+        except (OSError, subprocess.SubprocessError):
+            return ""
+
+    def _open(self, pid: int, access: int) -> Optional[int]:
+        handle = self.kernel32.OpenProcess(access, 0, pid)
+        return int(handle) if handle else None
+
+    def _toolhelp(self) -> List[Tuple[int, int, str]]:
+        snap = self.kernel32.CreateToolhelp32Snapshot(2, 0)  # TH32CS_SNAPPROCESS
+        if not snap or snap == ctypes.c_void_p(-1).value:
+            return []
+        found: List[Tuple[int, int, str]] = []
+        entry = ProcessEntry32()
+        entry.dwSize = ctypes.sizeof(ProcessEntry32)
+        ok = self.kernel32.Process32FirstW(snap, ctypes.byref(entry))
+        while ok:
+            found.append((int(entry.th32ProcessID), int(entry.th32ParentProcessID), entry.szExeFile))
+            ok = self.kernel32.Process32NextW(snap, ctypes.byref(entry))
+        self.kernel32.CloseHandle(snap)
+        return found
+
+    def _command_line(self, handle: int) -> str:
+        size = 1024
+        for _ in range(3):
+            buf = ctypes.create_string_buffer(size)
+            needed = ctypes.c_uint32(0)
+            status = self.ntdll.NtQueryInformationProcess(handle, 60, buf, size, ctypes.byref(needed))  # ProcessCommandLineInformation
+            if status == 0:
+                length = int.from_bytes(buf.raw[0:2], "little")
+                pointer = int.from_bytes(buf.raw[8:16] if ctypes.sizeof(ctypes.c_void_p) == 8 else buf.raw[4:8], "little")
+                return ctypes.wstring_at(pointer, length // 2)
+            if needed.value <= size:
+                break
+            size = int(needed.value)
+        return ""
+
+    def _row(self, pid: int, ppid: int, name: str, now_ms: int, suspended: Dict[str, int]) -> Row:
+        handle = self._open(pid, ACCESS_QUERY_LIMITED | ACCESS_SUSPEND_RESUME | ACCESS_TERMINATE)
+        is_mine = handle is not None
+        if handle is None:
+            handle = self._open(pid, ACCESS_QUERY_LIMITED)
+        started_ms = 0
+        cpu_pct = 0.0
+        mem = 0
+        exe = name
+        args = ""
+        if handle is not None:
+            try:
+                created, exited, kernel, user = FileTime(), FileTime(), FileTime(), FileTime()
+                if self.kernel32.GetProcessTimes(handle, ctypes.byref(created), ctypes.byref(exited), ctypes.byref(kernel), ctypes.byref(user)):
+                    started_ms = (filetime_int(created) - FILETIME_UNIX_EPOCH) // 10_000
+                    elapsed_s = max(0.001, (now_ms - started_ms) / 1000)
+                    cpu_pct = (filetime_int(kernel) + filetime_int(user)) / 1e7 / elapsed_s * 100
+                counters = MemoryCounters()
+                counters.cb = ctypes.sizeof(counters)
+                if self.kernel32.K32GetProcessMemoryInfo(handle, ctypes.byref(counters), counters.cb):
+                    mem = int(counters.WorkingSetSize)
+                line = self._command_line(handle).strip()
+                if line:
+                    if line.startswith('"') and line.count('"') >= 2:
+                        end = line.index('"', 1)
+                        exe, args = line[1:end], line[end + 1 :].strip()
+                    else:
+                        head, _, tail = line.partition(" ")
+                        exe, args = head, tail.strip()
+                else:
+                    buf = ctypes.create_unicode_buffer(1024)
+                    length = ctypes.c_uint32(1024)
+                    if self.kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(length)):
+                        exe = buf.value
+            finally:
+                self.kernel32.CloseHandle(handle)
+        since = suspended.get(str(pid))
+        is_suspended = since is not None and abs(int(since) - started_ms) <= START_SLACK_MS
+        return Row(
+            pid=pid,
+            ppid=ppid,
+            pgid=0,
+            uid=0 if is_mine else 1,
+            stat="T" if is_suspended else "S",
+            started_ms=started_ms,
+            cpu_pct=cpu_pct,
+            mem_bytes=mem,
+            exe=exe,
+            args=args,
+        )
+
+    def ps(self) -> Dict[int, Row]:
+        state = self._load()
+        now_ms = self.now_ms()
+        rows = {pid: self._row(pid, ppid, name, now_ms, state["suspended"]) for pid, ppid, name in self._toolhelp() if pid > 0}
+        if not rows:
+            raise RuntimeError("the process list was empty")
+        # A launched server's group: every process below it, while it is the same process.
+        launched = {int(pid): started for pid, started in state["launched"].items()}
+        for pid in list(rows):
+            cursor: Optional[Row] = rows[pid]
+            for _ in range(64):
+                if cursor is None:
+                    break
+                started = launched.get(cursor.pid)
+                if started is not None and abs(cursor.started_ms - started) <= START_SLACK_MS:
+                    rows[pid] = replace(rows[pid], pgid=cursor.pid)
+                    break
+                cursor = rows.get(cursor.ppid)
+        return rows
+
+    def listeners(self) -> List[Listener]:
+        return parse_netstat_listeners(self.run(["netstat", "-ano", "-p", "TCP"]))
+
+    def _cwd(self, pid: int) -> Optional[str]:
+        """The working folder, read from the process's PEB (64-bit processes only)."""
+        if ctypes.sizeof(ctypes.c_void_p) != 8:
+            return None
+        handle = self._open(pid, ACCESS_QUERY_LIMITED | ACCESS_QUERY | ACCESS_VM_READ)
+        if handle is None:
+            return None
+        try:
+            basic = (ctypes.c_uint64 * 6)()  # PROCESS_BASIC_INFORMATION: the PEB's address is its second field
+            if self.ntdll.NtQueryInformationProcess(handle, 0, basic, ctypes.sizeof(basic), None) != 0 or not basic[1]:
+                return None
+
+            def read(address: int, size: int) -> Optional[bytes]:
+                buf = ctypes.create_string_buffer(size)
+                done = ctypes.c_size_t(0)
+                if not self.kernel32.ReadProcessMemory(handle, address, buf, size, ctypes.byref(done)) or done.value != size:
+                    return None
+                return buf.raw
+
+            pointer = read(basic[1] + 0x20, 8)  # PEB.ProcessParameters
+            if pointer is None:
+                return None
+            current = read(int.from_bytes(pointer, "little") + 0x38, 16)  # RTL_USER_PROCESS_PARAMETERS.CurrentDirectory.DosPath
+            if current is None:
+                return None
+            length = int.from_bytes(current[0:2], "little")
+            text = read(int.from_bytes(current[8:16], "little"), length) if 0 < length <= 2048 else None
+            if text is None:
+                return None
+            path = text.decode("utf-16-le", "replace")
+            return path.rstrip("\\") if len(path) > 3 else path
+        except (OSError, ValueError, OverflowError):
+            return None
+        finally:
+            self.kernel32.CloseHandle(handle)
+
+    def cwds(self, pids: Iterable[int]) -> Dict[int, str]:
+        result: Dict[int, str] = {}
+        for pid in sorted(set(pids)):
+            path = self._cwd(pid)
+            if path:
+                result[pid] = printable(path)
+        return result
+
+    # -- signals ------------------------------------------------------------ #
+
+    def kill(self, pid: int, sig: int) -> None:
+        name = next((key for key, value in SIGNALS.items() if value == sig), "TERM")
+        handle = self._open(pid, ACCESS_SUSPEND_RESUME if name in ("STOP", "CONT") else ACCESS_TERMINATE)
+        if handle is None:
+            if ctypes.get_last_error() == ERROR_INVALID_PARAMETER:
+                raise ProcessLookupError(pid)
+            raise PermissionError(pid)
+        try:
+            if name == "STOP":
+                self.ntdll.NtSuspendProcess(handle)
+            elif name == "CONT":
+                self.ntdll.NtResumeProcess(handle)
+            else:
+                self.kernel32.TerminateProcess(handle, 1)
+        finally:
+            self.kernel32.CloseHandle(handle)
+        if name in ("STOP", "CONT"):
+            state = self._load()
+            if name == "STOP":
+                row = self._row(pid, 0, "", self.now_ms(), {})
+                state["suspended"][str(pid)] = row.started_ms
+            else:
+                state["suspended"].pop(str(pid), None)
+            self._save(state)
+
+    def killpg(self, pgid: int, sig: int) -> None:
+        """Every process of a launched server's group, the newest first."""
+        members = sorted((row for row in self.ps().values() if row.pgid == pgid), key=lambda row: -row.started_ms)
+        if not members:
+            raise ProcessLookupError(pgid)
+        for row in members:
+            try:
+                self.kill(row.pid, sig)
+            except ProcessLookupError:
+                continue
+
+    def spawn(self, argv: List[str], cwd: str, env: Dict[str, str], log_fd: int) -> int:
+        # cmd.exe parses its own command line: `/s /c "command"`, not a re-quoted argument.
+        line = f'{subprocess.list2cmdline(argv[:-1])} "{argv[-1]}"'
+        flags = CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
+        try:
+            child = subprocess.Popen(line, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=log_fd, stderr=subprocess.STDOUT, creationflags=flags | CREATE_BREAKAWAY_FROM_JOB, close_fds=True)
+        except OSError:  # the parent's job does not allow breaking away: stay in it
+            child = subprocess.Popen(line, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=log_fd, stderr=subprocess.STDOUT, creationflags=flags, close_fds=True)
+        state = self._load()
+        row = self._row(child.pid, 0, "", self.now_ms(), {})
+        state["launched"] = {pid: started for pid, started in state["launched"].items() if pid != str(child.pid)}
+        state["launched"][str(child.pid)] = row.started_ms
+        self._save(state)
+        return child.pid
+
+
 def snapshot(system: System, ctx: Context, dev_ports: Sequence[int], tails: Sequence[int], watch: Sequence[int], log_dir: str = LOG_DIR) -> Dict[str, object]:
     rows = system.ps()
     listeners = system.listeners()
@@ -682,19 +1049,24 @@ def send_signal(system: System, ctx: Context, sig_name: str, pid: int, expected_
 
 
 def launch_argv(command: str) -> List[str]:
-    """A dev server's command line runs under /bin/sh, so `a && b` works as typed."""
+    """A dev server's command line runs under /bin/sh (cmd.exe on Windows), so `a && b` works as typed."""
+    if IS_WINDOWS:
+        return [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/s", "/c", command]
     return ["/bin/sh", "-c", command]
 
 
 def launch_env(environ: Dict[str, str], home: str) -> Dict[str, str]:
     """The session's environment, with the usual tool folders on PATH (task, bun, uv)."""
     env = dict(environ)
-    parts = [part for part in env.get("PATH", "").split(":") if part]
-    for extra in EXTRA_PATH:
+    # Windows spells it Path, and a plain dict does not fold case.
+    key = next((name for name in env if name.upper() == "PATH"), "PATH")
+    parts = [part for part in env.get(key, "").split(os.pathsep) if part]
+    extras = EXTRA_PATH_WINDOWS if IS_WINDOWS else EXTRA_PATH
+    for extra in extras:
         folder = extra.replace("~", home, 1) if extra.startswith("~") else extra
         if folder not in parts:
             parts.append(folder)
-    env["PATH"] = ":".join(parts)
+    env[key] = os.pathsep.join(parts)
     return env
 
 
@@ -869,8 +1241,8 @@ def option(args: List[str], name: str) -> List[int]:
 
 
 def main(argv: List[str], system: Optional[System] = None) -> Dict[str, object]:
-    machine = system if system is not None else System()
-    ctx = Context(me=os.getpid(), uid=os.getuid())
+    machine = system if system is not None else (WindowsSystem() if IS_WINDOWS else System())
+    ctx = Context(me=os.getpid(), uid=0 if IS_WINDOWS else os.getuid())
     mode = argv[0] if argv else "snapshot"
     rest = argv[1:]
     if mode == "snapshot":

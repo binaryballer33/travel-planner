@@ -13,6 +13,7 @@ import type {
 import { classifyTool, refineAccess } from './access'
 import { fmtBytes, fmtDuration, oneLine, sanitize } from './format'
 import { actorOf, summarizeCall } from './summary'
+import { toPosixPath } from './tree'
 import { ZERO_RATES, ZERO_TOTALS, type SamplerTick } from './sampler'
 import { foldTrend, TREND_STEP_MS } from './trend'
 
@@ -74,11 +75,11 @@ export const summarizeInput = (tool: string, input: Input): Summary => {
     case 'Edit':
     case 'MultiEdit': {
       const filePath = text(input, 'file_path') ?? '(no path)'
-      return { ...base, title: filePath, filePath }
+      return { ...base, title: filePath, filePath: toPosixPath(filePath) }
     }
     case 'NotebookEdit': {
       const filePath = text(input, 'notebook_path') ?? '(no path)'
-      return { ...base, title: filePath, filePath }
+      return { ...base, title: filePath, filePath: toPosixPath(filePath) }
     }
     case 'Grep':
       return { ...base, title: `${text(input, 'pattern') ?? ''}${text(input, 'path') ? `  in ${text(input, 'path')}` : ''}` }

@@ -7,18 +7,21 @@ Nothing here signals or starts a real process: the machine is a FakeSystem.
 from __future__ import annotations
 
 import os
-import signal
 import tempfile
 import unittest
 from typing import Dict, Iterable, List, Set, Tuple
 
 from procs import (
+    IS_WINDOWS,
+    SIGNALS,
     Context,
     Listener,
     Row,
     System,
+    base_name,
     build_snapshot,
     group_is_safe,
+    is_abs,
     is_claude,
     is_monitor,
     launch_argv,
@@ -27,6 +30,7 @@ from procs import (
     parse_cwds,
     parse_etime,
     parse_listeners,
+    parse_netstat_listeners,
     parse_ps,
     plan_stop,
     protected_pids,
@@ -42,6 +46,8 @@ from procs import (
 )
 
 NOW = 1_760_000_000_000
+#: What launch_argv puts before the command: the shell that runs it.
+WORKS_UNDER = [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/s", "/c"] if IS_WINDOWS else ["/bin/sh", "-c"]
 HERE = "/Users/me/.claude/mods/session-monitor/sampler"
 CLAUDE = "/Users/me/Library/Application Support/Claude/claude-code/2.1.293/abc/claude.app/Contents/MacOS/claude"
 UID = 501
@@ -156,7 +162,7 @@ class FakeSystem(System):
 
     def _end(self, pids: List[int], sig: int) -> None:
         for pid in pids:
-            if sig == signal.SIGKILL or (sig == signal.SIGTERM and pid not in self.stubborn):
+            if sig == SIGNALS["KILL"] or (sig == SIGNALS["TERM"] and pid not in self.stubborn):
                 self.table.pop(pid, None)
 
     def kill(self, pid: int, sig: int) -> None:
@@ -342,7 +348,7 @@ class Signals(unittest.TestCase):
         started = rows()[105].started_ms
         result = send_signal(machine, ctx(), "STOP", 105, started)
         self.assertTrue(result["ok"])
-        self.assertEqual(machine.signals, [("kill", 105, signal.SIGSTOP)])
+        self.assertEqual(machine.signals, [("kill", 105, SIGNALS["STOP"])])
         self.assertIn("Suspended python3 serve.py 9000 (105)", str(result["message"]))
         # A reused pid: same number, another start time.
         machine.signals.clear()
@@ -360,7 +366,7 @@ class Signals(unittest.TestCase):
         machine = FakeSystem(rows(), parse_listeners(LSOF))
         result = send_signal(machine, ctx(), "TERM", 200, rows()[200].started_ms)
         self.assertTrue(result["ok"])
-        self.assertEqual(machine.signals, [("kill", 200, signal.SIGTERM)])
+        self.assertEqual(machine.signals, [("kill", 200, SIGNALS["TERM"])])
 
     def test_cli_rejects_bad_arguments(self) -> None:
         machine = FakeSystem(rows(), parse_listeners(LSOF))
@@ -376,7 +382,7 @@ class Stop(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertTrue(result["isFree"])
         self.assertFalse(result["forced"])
-        self.assertEqual(machine.signals, [("killpg", 300, signal.SIGTERM)])
+        self.assertEqual(machine.signals, [("killpg", 300, SIGNALS["TERM"])])
         self.assertNotIn(301, machine.table)
         self.assertIn("process group 300", str(result["message"]))
 
@@ -386,7 +392,7 @@ class Stop(unittest.TestCase):
         result = run_stop(machine, 8133, 5, ctx())
         self.assertTrue(result["ok"])
         self.assertTrue(result["forced"])
-        self.assertEqual(machine.signals, [("killpg", 300, signal.SIGTERM), ("killpg", 300, signal.SIGKILL)])
+        self.assertEqual(machine.signals, [("killpg", 300, SIGNALS["TERM"]), ("killpg", 300, SIGNALS["KILL"])])
         self.assertGreaterEqual(machine.clock - NOW, 5_000)
 
     def test_a_server_sharing_claudes_group_is_stopped_alone(self) -> None:
@@ -398,7 +404,7 @@ class Stop(unittest.TestCase):
         self.assertEqual(plan.pids, [201])
         result = run_stop(machine, 7000, 5, ctx())
         self.assertTrue(result["ok"])
-        self.assertEqual(machine.signals, [("kill", 201, signal.SIGTERM)])
+        self.assertEqual(machine.signals, [("kill", 201, SIGNALS["TERM"])])
         self.assertIn(200, machine.table)
 
     def test_a_reused_pid_is_not_force_killed(self) -> None:
@@ -408,7 +414,7 @@ class Stop(unittest.TestCase):
         machine.stubborn = {201}
         result = run_stop(machine, 7000, 5, ctx())
         self.assertTrue(result["ok"])
-        self.assertEqual(machine.signals, [("kill", 201, signal.SIGTERM)])
+        self.assertEqual(machine.signals, [("kill", 201, SIGNALS["TERM"])])
         self.assertEqual(machine.table[201].exe, "/bin/other")
 
     def test_stop_refuses_this_sessions_claude_and_other_users(self) -> None:
@@ -428,7 +434,14 @@ class Stop(unittest.TestCase):
 
 class Launch(unittest.TestCase):
     def test_launch_argv_and_env(self) -> None:
-        self.assertEqual(launch_argv("task dev:api"), ["/bin/sh", "-c", "task dev:api"])
+        self.assertEqual(launch_argv("task dev:api"), WORKS_UNDER + ["task dev:api"])
+        if IS_WINDOWS:
+            env = launch_env({"Path": "C:\\Windows"}, "C:\\Users\\me")
+            parts = env["Path"].split(os.pathsep)
+            self.assertEqual(parts[0], "C:\\Windows")
+            self.assertIn("C:\\Users\\me\\.bun\\bin", parts)
+            self.assertEqual(len(parts), len(set(parts)))
+            return
         env = launch_env({"PATH": "/usr/bin:/bin", "HOME": "/Users/me"}, "/Users/me")
         parts = env["PATH"].split(":")
         self.assertEqual(parts[:2], ["/usr/bin", "/bin"])
@@ -453,9 +466,9 @@ class Launch(unittest.TestCase):
             self.assertEqual(result["pid"], 4242)
             self.assertEqual(result["pgid"], 4242)
             argv, cwd, env = machine.spawned[0]
-            self.assertEqual(argv, ["/bin/sh", "-c", "task dev:api"])
+            self.assertEqual(argv, WORKS_UNDER + ["task dev:api"])
             self.assertEqual(cwd, folder)
-            self.assertIn("/opt/homebrew/bin", env["PATH"])
+            self.assertIn(".bun" if IS_WINDOWS else "/opt/homebrew/bin", env["PATH"])
             lines = read_tail(os.path.join(logs, "8134.log"))
             self.assertIn("starting `task dev:api`", lines[-2])
             self.assertEqual(lines[-1], "server output")
@@ -470,13 +483,42 @@ class Tail(unittest.TestCase):
     def test_tail_strips_escapes_and_masks_secrets(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             path = os.path.join(folder, "8133.log")
-            with open(path, "w") as handle:
+            with open(path, "w", newline="") as handle:
                 handle.write("".join(f"line {n}\n" for n in range(100)))
                 handle.write("\x1b[32mready\x1b[0m in 300 ms\r\nSECRET_KEY=abc\n")
             lines = read_tail(path, max_lines=3)
             self.assertEqual(lines, ["line 99", "ready in 300 ms", "SECRET_KEY=***"])
             self.assertEqual(read_tail(path, max_bytes=45, max_lines=40), ["ready in 300 ms", "SECRET_KEY=***"])
         self.assertEqual(read_tail("/no/such/file"), [])
+
+
+NETSTAT = """
+Active Connections
+
+  Proto  Local Address          Foreign Address        State           PID
+  TCP    0.0.0.0:135            0.0.0.0:0              LISTENING       1180
+  TCP    0.0.0.0:8133           0.0.0.0:0              ABHÖREN         302
+  TCP    [::]:8133              [::]:0                 ABHÖREN         302
+  TCP    127.0.0.1:8134         0.0.0.0:0              LISTENING       303
+  TCP    192.168.1.5:50123      142.250.1.1:443        ESTABLISHED     4040
+"""
+
+
+class WindowsNames(unittest.TestCase):
+    def test_netstat_listeners_are_the_rows_with_a_wildcard_remote_whatever_the_language(self) -> None:
+        found = parse_netstat_listeners(NETSTAT)
+        self.assertEqual([(one.port, one.pid) for one in found], [(135, 1180), (8133, 302), (8134, 303)])
+        self.assertEqual(found[1].address, "0.0.0.0 ::")
+
+    def test_names_ignore_the_exe_suffix_and_the_slash_kind(self) -> None:
+        self.assertEqual(base_name("C:\\Program Files\\nodejs\\node.exe"), "node")
+        self.assertEqual(base_name("/usr/bin/node"), "node")
+        self.assertTrue(is_abs("C:\\a") and is_abs("C:/a") and is_abs("/a") and not is_abs("node"))
+        self.assertEqual(short_name("C:\\Program Files\\nodejs\\node.exe", "C:\\work\\app\\server.js --port 3000"), "node server.js 3000")
+
+    def test_claude_is_found_by_its_windows_path(self) -> None:
+        engine = Row(pid=9, ppid=1, pgid=0, uid=0, stat="S", started_ms=NOW, cpu_pct=0, mem_bytes=0, exe="C:\\Users\\me\\AppData\\Local\\Claude\\claude-code\\2.1.0\\claude.exe", args="--verbose")
+        self.assertTrue(is_claude(engine))
 
 
 if __name__ == "__main__":

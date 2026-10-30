@@ -13,6 +13,7 @@ import {
   findEntry,
   flattenTree,
   forRoot,
+  isAbsolutePath,
   isBelow,
   isInsideRoot,
   listedFolders,
@@ -24,6 +25,7 @@ import {
   sizeText,
   sizeTone,
   toggleHidden,
+  toPosixPath,
   treeArgv,
   withListing,
   type TreeRow,
@@ -79,6 +81,30 @@ describe('tree paths', () => {
     expect(isInsideRoot('', '/repo')).toBe(false)
     expect(isInsideRoot('/a/../b', '/a/../b/c')).toBe(false)
     expect(isInsideRoot('/', '/etc')).toBe(true)
+  })
+
+  test('on Windows a path is kept with forward slashes and a drive: inside, below, parent and name read as they do from /', () => {
+    expect(toPosixPath('C:\\Users\\me\\proj\\')).toBe('C:/Users/me/proj')
+    expect(toPosixPath('C:')).toBe('C:/')
+    expect(toPosixPath('/')).toBe('/')
+    expect(isAbsolutePath('C:/Users')).toBe(true)
+    expect(isAbsolutePath('C:\\Users')).toBe(false)
+    expect(isAbsolutePath('Users/me')).toBe(false)
+    expect(isInsideRoot('C:/Users/me', 'C:/Users/me')).toBe(true)
+    expect(isInsideRoot('C:/Users/me', 'C:/Users/me/src/app.py')).toBe(true)
+    expect(isInsideRoot('C:/Users/me', 'C:/Users/me/../you')).toBe(false)
+    expect(isInsideRoot('C:/Users/me', 'C:/Users/mine')).toBe(false)
+    expect(isInsideRoot('C:/', 'C:/Windows')).toBe(true)
+    expect(isInsideRoot('C:/Users/me', '/Users/me')).toBe(false)
+    expect(childPath('C:/Users/me', 'src')).toBe('C:/Users/me/src')
+    expect(childPath('C:/', 'Windows')).toBe('C:/Windows')
+    expect(isBelow('C:/', 'C:/Windows')).toBe(true)
+    expect(isBelow('C:/Users', 'C:/Users')).toBe(false)
+    expect(baseName('C:/Users/me')).toBe('me')
+    expect(baseName('C:/')).toBe('C:/')
+    expect(parentOf('C:/Users/me')).toBe('C:/Users')
+    expect(parentOf('C:/Users')).toBe('C:/')
+    expect(parentOf('C:/')).toBe('C:/')
   })
 
   test('a child path is built only from an entry name', () => {

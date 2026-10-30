@@ -17,6 +17,7 @@ import type {
   UiState,
 } from '../../types'
 import type { Tone } from './format'
+import { isAbsolutePath } from './tree'
 
 /** How often the listing is read while the Ports tab is open. */
 export const PORTS_POLL_MS = 3_000
@@ -264,7 +265,7 @@ export const readDevServers = (value: unknown): DevServerConfig[] | undefined =>
     .filter(isRecord)
     .filter(one => typeof one.port === 'number' && Number.isInteger(one.port) && one.port > 0 && one.port < 65_536)
     .map(one => ({ port: num(one.port), name: str(one.name) || `:${num(one.port)}`, cwd: str(one.cwd), command: str(one.command), url: str(one.url) }))
-    .filter(one => one.cwd.startsWith('/') && one.command.trim() !== '')
+    .filter(one => isAbsolutePath(one.cwd) && one.command.trim() !== '')
   const unique = configs.filter((one, index) => configs.findIndex(other => other.port === one.port) === index).slice(0, MAX_DEV_SERVERS)
   return unique.length > 0 ? unique : undefined
 }

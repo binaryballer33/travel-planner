@@ -9,8 +9,8 @@ argv), the short-lived helpers, and this sampler itself.
 Each emit also carries the whole Mac: its CPU in use, its memory in use, its
 network, and how long a TCP connect to the Claude API takes.
 
-macOS only, standard library only (Python 3.9+). Everything is read without
-root: per-process counters come from libproc's proc_pid_rusage (rusage_info_v6,
+macOS and Windows, standard library only (Python 3.9+). On macOS everything is
+read without root: per-process counters come from libproc's proc_pid_rusage (rusage_info_v6,
 which carries the kernel's energy estimate in nanojoules), the process tree from
 proc_listchildpids, argv from sysctl KERN_PROCARGS2, per-process network bytes
 from nettop and machine-wide bytes from netstat. The machine's CPU ticks come
@@ -19,8 +19,14 @@ host_statistics64 (HOST_VM_INFO64) and its RAM from sysctl hw.memsize; the
 latency probe runs on a thread of its own, so a slow network never holds up a
 tick.
 
+On Windows (class Windows) the same figures come from kernel32 (GetProcessTimes,
+K32GetProcessMemoryInfo, GetProcessIoCounters, GetSystemTimes, GlobalMemoryStatusEx,
+a toolhelp snapshot for the tree), ntdll (the command line) and iphlpapi
+(GetIfTable2). Windows has no per-process network counter, so those figures are
+absent; energy is estimated from CPU time.
+
 The accounting (Tracker) is pure and is unit-tested with synthetic samples; the
-OS layer (Mac) is a thin ctypes wrapper.
+OS layers (Mac, Windows) are thin ctypes wrappers.
 """
 
 from __future__ import annotations
@@ -38,7 +44,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple, Union
 
 SHELL_MARK = "shell-snapshots/snapshot-"
 SERVICE_AGE_S = 5.0
@@ -121,21 +127,25 @@ def extract_bash_command(script: str) -> Optional[str]:
 
 
 def is_tool_shell(argv: List[str]) -> bool:
-    return any(SHELL_MARK in arg for arg in argv)
+    return any(SHELL_MARK in arg.replace("\\", "/") for arg in argv)
 
 
 def service_label(argv: List[str]) -> str:
     """A short, secret-free name for a long-lived child (an MCP server, an LSP)."""
-    tokens = " ".join(argv).split()
+    # A Windows program's path may hold spaces (`C:\Program Files\nodejs\node.exe`): keep it whole.
+    first = argv[0] if argv else ""
+    tokens = ([first] if re.match(r"^[A-Za-z]:[\\/]", first) else first.split()) + " ".join(argv[1:]).split()
     if not tokens:
         return "process"
-    words = [os.path.basename(tokens[0])]
+    program = os.path.basename(tokens[0].replace("\\", "/"))
+    words = [program[:-4] if program.lower().endswith(".exe") else program]
     for token in tokens[1:]:
         if len(words) >= 4:
             break
         if token.startswith("-") or "=" in token:
             continue
-        words.append(os.path.basename(token) if token.startswith("/") else token)
+        is_path = token.startswith("/") or re.match(r"^[A-Za-z]:[\\/]", token) is not None
+        words.append(os.path.basename(token.replace("\\", "/")) if is_path else token)
     return redact(" ".join(words))[:60]
 
 
@@ -937,6 +947,334 @@ class Mac:
 
 
 # --------------------------------------------------------------------------- #
+# The OS layer (Windows)
+# --------------------------------------------------------------------------- #
+
+
+class FileTime(ctypes.Structure):
+    _fields_ = [("lo", ctypes.c_uint32), ("hi", ctypes.c_uint32)]
+
+
+class ProcessMemoryCountersEx(ctypes.Structure):
+    _fields_ = [
+        ("cb", ctypes.c_uint32),
+        ("PageFaultCount", ctypes.c_uint32),
+        ("PeakWorkingSetSize", ctypes.c_size_t),
+        ("WorkingSetSize", ctypes.c_size_t),
+        ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+        ("QuotaPagedPoolUsage", ctypes.c_size_t),
+        ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+        ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+        ("PagefileUsage", ctypes.c_size_t),
+        ("PeakPagefileUsage", ctypes.c_size_t),
+        ("PrivateUsage", ctypes.c_size_t),
+    ]
+
+
+class IoCounters(ctypes.Structure):
+    _fields_ = [
+        ("ReadOperationCount", ctypes.c_uint64),
+        ("WriteOperationCount", ctypes.c_uint64),
+        ("OtherOperationCount", ctypes.c_uint64),
+        ("ReadTransferCount", ctypes.c_uint64),
+        ("WriteTransferCount", ctypes.c_uint64),
+        ("OtherTransferCount", ctypes.c_uint64),
+    ]
+
+
+class ProcessEntry32(ctypes.Structure):
+    _fields_ = [
+        ("dwSize", ctypes.c_uint32),
+        ("cntUsage", ctypes.c_uint32),
+        ("th32ProcessID", ctypes.c_uint32),
+        ("th32DefaultHeapID", ctypes.c_size_t),
+        ("th32ModuleID", ctypes.c_uint32),
+        ("cntThreads", ctypes.c_uint32),
+        ("th32ParentProcessID", ctypes.c_uint32),
+        ("pcPriClassBase", ctypes.c_int32),
+        ("dwFlags", ctypes.c_uint32),
+        ("szExeFile", ctypes.c_wchar * 260),
+    ]
+
+
+class MemoryStatusEx(ctypes.Structure):
+    _fields_ = [
+        ("dwLength", ctypes.c_uint32),
+        ("dwMemoryLoad", ctypes.c_uint32),
+        ("ullTotalPhys", ctypes.c_uint64),
+        ("ullAvailPhys", ctypes.c_uint64),
+        ("ullTotalPageFile", ctypes.c_uint64),
+        ("ullAvailPageFile", ctypes.c_uint64),
+        ("ullTotalVirtual", ctypes.c_uint64),
+        ("ullAvailVirtual", ctypes.c_uint64),
+        ("ullAvailExtendedVirtual", ctypes.c_uint64),
+    ]
+
+
+class MibIfRow2(ctypes.Structure):
+    """<netioapi.h> MIB_IF_ROW2 (1352 bytes): one network interface's counters."""
+
+    _fields_ = [
+        ("InterfaceLuid", ctypes.c_uint64),
+        ("InterfaceIndex", ctypes.c_uint32),
+        ("InterfaceGuid", ctypes.c_ubyte * 16),
+        ("Alias", ctypes.c_wchar * 257),
+        ("Description", ctypes.c_wchar * 257),
+        ("PhysicalAddressLength", ctypes.c_uint32),
+        ("PhysicalAddress", ctypes.c_ubyte * 32),
+        ("PermanentPhysicalAddress", ctypes.c_ubyte * 32),
+        ("Mtu", ctypes.c_uint32),
+        ("Type", ctypes.c_uint32),
+        ("TunnelType", ctypes.c_uint32),
+        ("MediaType", ctypes.c_uint32),
+        ("PhysicalMediumType", ctypes.c_uint32),
+        ("AccessType", ctypes.c_uint32),
+        ("DirectionType", ctypes.c_uint32),
+        ("Flags", ctypes.c_ubyte),  # bit 0: HardwareInterface
+        ("OperStatus", ctypes.c_uint32),
+        ("AdminStatus", ctypes.c_uint32),
+        ("MediaConnectState", ctypes.c_uint32),
+        ("NetworkGuid", ctypes.c_ubyte * 16),
+        ("ConnectionType", ctypes.c_uint32),
+        ("TransmitLinkSpeed", ctypes.c_uint64),
+        ("ReceiveLinkSpeed", ctypes.c_uint64),
+        ("InOctets", ctypes.c_uint64),
+        ("InUcastPkts", ctypes.c_uint64),
+        ("InNUcastPkts", ctypes.c_uint64),
+        ("InDiscards", ctypes.c_uint64),
+        ("InErrors", ctypes.c_uint64),
+        ("InUnknownProtos", ctypes.c_uint64),
+        ("InUcastOctets", ctypes.c_uint64),
+        ("InMulticastOctets", ctypes.c_uint64),
+        ("InBroadcastOctets", ctypes.c_uint64),
+        ("OutOctets", ctypes.c_uint64),
+        ("OutUcastPkts", ctypes.c_uint64),
+        ("OutNUcastPkts", ctypes.c_uint64),
+        ("OutDiscards", ctypes.c_uint64),
+        ("OutErrors", ctypes.c_uint64),
+        ("OutUcastOctets", ctypes.c_uint64),
+        ("OutMulticastOctets", ctypes.c_uint64),
+        ("OutBroadcastOctets", ctypes.c_uint64),
+        ("OutQLen", ctypes.c_uint64),
+    ]
+
+
+#: FILETIME counts 100 ns ticks from 1601; the Unix epoch is this many of them later.
+FILETIME_UNIX_EPOCH = 116444736000000000
+#: IF_TYPE_ETHERNET_CSMACD, IF_TYPE_IEEE80211, and the two mobile broadband types.
+NET_TYPES = (6, 71, 243, 244)
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+PROCESS_COMMAND_LINE_INFORMATION = 60  # NtQueryInformationProcess class: a UNICODE_STRING
+TREE_CACHE_S = 0.15
+
+
+def filetime_int(ft: FileTime) -> int:
+    return (ft.hi << 32) | ft.lo
+
+
+class Windows:
+    """The same readings as `Mac`, from kernel32, ntdll, iphlpapi and shell32.
+
+    What Windows has no counter for is left out rather than invented: a
+    process's network bytes (`nettop` returns None) and the CPU time a process's
+    reaped children used (`child_cpu` is 0). Energy is estimated from CPU time.
+    """
+
+    def __init__(self) -> None:
+        self.kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+        self.ntdll = ctypes.WinDLL("ntdll")  # type: ignore[attr-defined]
+        self.iphlpapi = ctypes.WinDLL("iphlpapi")  # type: ignore[attr-defined]
+        self.shell32 = ctypes.WinDLL("shell32")  # type: ignore[attr-defined]
+        k = self.kernel32
+        k.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+        k.OpenProcess.restype = ctypes.c_void_p
+        k.CloseHandle.argtypes = [ctypes.c_void_p]
+        k.GetProcessTimes.argtypes = [ctypes.c_void_p] + [ctypes.POINTER(FileTime)] * 4
+        k.K32GetProcessMemoryInfo.argtypes = [ctypes.c_void_p, ctypes.POINTER(ProcessMemoryCountersEx), ctypes.c_uint32]
+        k.GetProcessIoCounters.argtypes = [ctypes.c_void_p, ctypes.POINTER(IoCounters)]
+        k.GetSystemTimes.argtypes = [ctypes.POINTER(FileTime)] * 3
+        k.GlobalMemoryStatusEx.argtypes = [ctypes.POINTER(MemoryStatusEx)]
+        k.CreateToolhelp32Snapshot.argtypes = [ctypes.c_uint32, ctypes.c_uint32]
+        k.CreateToolhelp32Snapshot.restype = ctypes.c_void_p
+        k.Process32FirstW.argtypes = [ctypes.c_void_p, ctypes.POINTER(ProcessEntry32)]
+        k.Process32NextW.argtypes = [ctypes.c_void_p, ctypes.POINTER(ProcessEntry32)]
+        k.LocalFree.argtypes = [ctypes.c_void_p]
+        k.LocalFree.restype = ctypes.c_void_p
+        self.ntdll.NtQueryInformationProcess.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_uint32,
+            ctypes.c_void_p,
+            ctypes.c_uint32,
+            ctypes.POINTER(ctypes.c_uint32),
+        ]
+        self.ntdll.NtQueryInformationProcess.restype = ctypes.c_int32
+        self.shell32.CommandLineToArgvW.argtypes = [ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_int)]
+        self.shell32.CommandLineToArgvW.restype = ctypes.POINTER(ctypes.c_wchar_p)
+        self.iphlpapi.GetIfTable2.argtypes = [ctypes.POINTER(ctypes.c_void_p)]
+        self.iphlpapi.FreeMibTable.argtypes = [ctypes.c_void_p]
+        self.parents: Dict[int, int] = {}
+        self.kids: Dict[int, List[int]] = {}
+        self.tree_at = -1e9
+        self.mem_total = self._mem_total()
+
+    def mach_now(self) -> int:
+        return 0  # a process's start is its creation time, read with its counters
+
+    def _open(self, pid: int) -> Optional[int]:
+        handle = self.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid)
+        return int(handle) if handle else None
+
+    def _tree(self) -> None:
+        """Every process's parent, from one toolhelp snapshot, kept for a moment."""
+        now = time.monotonic()
+        if now - self.tree_at < TREE_CACHE_S:
+            return
+        snap = self.kernel32.CreateToolhelp32Snapshot(2, 0)  # TH32CS_SNAPPROCESS
+        if not snap or snap == ctypes.c_void_p(-1).value:
+            return
+        parents: Dict[int, int] = {}
+        kids: Dict[int, List[int]] = {}
+        entry = ProcessEntry32()
+        entry.dwSize = ctypes.sizeof(ProcessEntry32)
+        ok = self.kernel32.Process32FirstW(snap, ctypes.byref(entry))
+        while ok:
+            pid, ppid = int(entry.th32ProcessID), int(entry.th32ParentProcessID)
+            parents[pid] = ppid
+            kids.setdefault(ppid, []).append(pid)
+            ok = self.kernel32.Process32NextW(snap, ctypes.byref(entry))
+        self.kernel32.CloseHandle(snap)
+        self.parents, self.kids, self.tree_at = parents, kids, now
+
+    def children(self, pid: int) -> List[int]:
+        self._tree()
+        return [p for p in self.kids.get(pid, []) if p != pid and p > 0]
+
+    def parent(self, pid: int) -> Optional[int]:
+        self._tree()
+        ppid = self.parents.get(pid)
+        return ppid if ppid else None
+
+    def _mem_total(self) -> Optional[int]:
+        status = MemoryStatusEx()
+        status.dwLength = ctypes.sizeof(MemoryStatusEx)
+        if not self.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)) or status.ullTotalPhys <= 0:
+            return None
+        return int(status.ullTotalPhys)
+
+    def cpu_ticks(self) -> Optional[CpuTicks]:
+        """The machine's CPU time in 100 ns ticks, every core summed (kernel time includes idle)."""
+        idle, kernel, user = FileTime(), FileTime(), FileTime()
+        if not self.kernel32.GetSystemTimes(ctypes.byref(idle), ctypes.byref(kernel), ctypes.byref(user)):
+            return None
+        idle_t = filetime_int(idle)
+        return CpuTicks(user=filetime_int(user), system=max(0, filetime_int(kernel) - idle_t), idle=idle_t, nice=0)
+
+    def memory_used(self) -> Optional[int]:
+        """Task Manager's "In use": physical memory less what is available."""
+        status = MemoryStatusEx()
+        status.dwLength = ctypes.sizeof(MemoryStatusEx)
+        if not self.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            return None
+        return int(status.ullTotalPhys - status.ullAvailPhys)
+
+    def rusage(self, pid: int, ppid: int, now_wall: float, now_mach: int) -> Optional[Proc]:
+        handle = self._open(pid)
+        if handle is None:
+            return None
+        try:
+            created, exited, kernel, user = FileTime(), FileTime(), FileTime(), FileTime()
+            if not self.kernel32.GetProcessTimes(
+                handle, ctypes.byref(created), ctypes.byref(exited), ctypes.byref(kernel), ctypes.byref(user)
+            ):
+                return None
+            memory = ProcessMemoryCountersEx()
+            memory.cb = ctypes.sizeof(memory)
+            have_memory = self.kernel32.K32GetProcessMemoryInfo(handle, ctypes.byref(memory), memory.cb)
+            io = IoCounters()
+            have_io = self.kernel32.GetProcessIoCounters(handle, ctypes.byref(io))
+        finally:
+            self.kernel32.CloseHandle(handle)
+        cpu = (filetime_int(kernel) + filetime_int(user)) / 1e7
+        mem = int(memory.PrivateUsage) if have_memory else 0
+        return Proc(
+            pid=pid,
+            ppid=ppid,
+            start=filetime_int(created),
+            started_at=(filetime_int(created) - FILETIME_UNIX_EPOCH) / 1e7,
+            own_cpu=cpu,
+            child_cpu=0.0,
+            energy_j=cpu * DEFAULT_J_PER_CPU_S,
+            mem=mem,
+            peak_mem=max(mem, int(memory.PeakPagefileUsage)) if have_memory else 0,
+            disk_r=int(io.ReadTransferCount) if have_io else 0,
+            disk_w=int(io.WriteTransferCount) if have_io else 0,
+        )
+
+    def argv(self, pid: int) -> List[str]:
+        """The command line, split as the C runtime does (ProcessCommandLineInformation, no PEB read)."""
+        handle = self._open(pid)
+        if handle is None:
+            return []
+        try:
+            size = 1024
+            for _ in range(3):
+                buf = ctypes.create_string_buffer(size)
+                needed = ctypes.c_uint32(0)
+                status = self.ntdll.NtQueryInformationProcess(
+                    handle, PROCESS_COMMAND_LINE_INFORMATION, buf, size, ctypes.byref(needed)
+                )
+                if status == 0:
+                    length = struct.unpack_from("<H", buf, 0)[0]
+                    pointer = struct.unpack_from("<Q", buf, 8)[0] if ctypes.sizeof(ctypes.c_void_p) == 8 else struct.unpack_from("<I", buf, 4)[0]
+                    line = ctypes.wstring_at(pointer, length // 2)
+                    return self._split(line)
+                if needed.value > size:  # STATUS_INFO_LENGTH_MISMATCH / BUFFER_OVERFLOW
+                    size = int(needed.value)
+                    continue
+                return []
+            return []
+        finally:
+            self.kernel32.CloseHandle(handle)
+
+    def _split(self, line: str) -> List[str]:
+        if not line.strip():
+            return []
+        count = ctypes.c_int(0)
+        parts = self.shell32.CommandLineToArgvW(line, ctypes.byref(count))
+        if not parts:
+            return line.split()
+        try:
+            return [parts[i] for i in range(count.value)]
+        finally:
+            self.kernel32.LocalFree(ctypes.cast(parts, ctypes.c_void_p))
+
+    def comm(self, pid: int) -> str:
+        args = self.argv(pid)
+        return os.path.basename(args[0].replace("\\", "/")) if args else ""
+
+    @staticmethod
+    def nettop() -> Optional[Dict[int, Tuple[int, int]]]:
+        return None  # Windows keeps no per-process byte counters a user may read
+
+    def interfaces(self) -> Optional[Tuple[int, int]]:
+        """Bytes in and out over every connected physical Ethernet, Wi-Fi and cellular adapter."""
+        table = ctypes.c_void_p()
+        if self.iphlpapi.GetIfTable2(ctypes.byref(table)) != 0 or not table.value:
+            return None
+        try:
+            count = ctypes.c_uint32.from_address(table.value).value
+            rows = (MibIfRow2 * count).from_address(table.value + 8)
+            total_in = total_out = 0
+            for row in rows:
+                if row.Type in NET_TYPES and row.OperStatus == 1 and row.Flags & 1:
+                    total_in += int(row.InOctets)
+                    total_out += int(row.OutOctets)
+            return total_in, total_out
+        finally:
+            self.iphlpapi.FreeMibTable(table)
+
+
+# --------------------------------------------------------------------------- #
 # The latency probe
 # --------------------------------------------------------------------------- #
 
@@ -992,22 +1330,32 @@ class LatencyProbe:
         return fresh_latency(self.latest, time.monotonic(), self.stale_s)
 
 
-def find_root(mac: Mac, start: int) -> int:
+def is_claude_argv(args: List[str]) -> bool:
+    """Whether a command line is the Claude Code engine: claude / claude.exe, or something inside Claude's app."""
+    for arg in args[:2]:
+        path = arg.replace("\\", "/")
+        name = os.path.basename(path).lower()
+        if name in ("claude", "claude.exe") or "/claude.app/" in path or "/claude-code/" in path:
+            return True
+    return False
+
+
+def find_root(mac: "OsLayer", start: int) -> int:
     """The Claude Code process above this sampler: the nearest ancestor named claude."""
     cursor: Optional[int] = start
     for _ in range(8):
         if cursor is None or cursor <= 1:
             break
-        args = mac.argv(cursor)
-        if any(
-            os.path.basename(arg) == "claude" or "/claude.app/" in arg or "/claude-code/" in arg for arg in args[:2]
-        ):
+        if is_claude_argv(mac.argv(cursor)):
             return cursor
         cursor = mac.parent(cursor)
     return start
 
 
-def snapshot(mac: Mac, root: int) -> List[Proc]:
+OsLayer = Union[Mac, Windows]
+
+
+def snapshot(mac: "OsLayer", root: int) -> List[Proc]:
     now_wall = time.time()
     now_mach = mac.mach_now()
     result: List[Proc] = []
@@ -1027,10 +1375,13 @@ def snapshot(mac: Mac, root: int) -> List[Proc]:
 
 
 def main() -> int:
-    if sys.platform != "darwin":
-        print(json.dumps({"type": "error", "message": "The sampler reads macOS process counters only."}), flush=True)
+    if sys.platform not in ("darwin", "win32"):
+        print(json.dumps({"type": "error", "message": "The sampler reads macOS and Windows process counters only."}), flush=True)
         return 1
-    mac = Mac()
+    if sys.platform == "win32":
+        # One JSON line per emit, in UTF-8, ended by a bare line feed.
+        sys.stdout.reconfigure(encoding="utf-8", newline=chr(10))  # type: ignore[attr-defined]
+    mac: OsLayer = Windows() if sys.platform == "win32" else Mac()
     me = os.getpid()
     root = int(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1].isdigit() else find_root(mac, os.getppid())
     tracker = Tracker(root=root, me=me, ncpu=os.cpu_count() or 1)
@@ -1047,8 +1398,8 @@ def main() -> int:
     last_net = 0.0
     known_children: set = set()
     while True:
-        if os.getppid() == 1:
-            return 0
+        if sys.platform != "win32" and os.getppid() == 1:
+            return 0  # Windows keeps a dead parent's pid, so it ends when the root is gone, below
         now = time.time()
         # One syscall a tick; the full walk runs while a command is live, when
         # the root's children change (a command starts or ends), and to emit.

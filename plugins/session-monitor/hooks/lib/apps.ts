@@ -86,3 +86,69 @@ export const openArgv = (path: string, isReveal: boolean, isFolder: boolean): st
   const chosen = isFolder ? undefined : appFor(path)
   return chosen === undefined ? ['open', path] : ['open', '-a', chosen.app, path]
 }
+
+// ------------------------------------------------------------------------- //
+// Windows: the same buttons through Explorer, `start` and PowerShell
+// ------------------------------------------------------------------------- //
+
+/** Whether a path (the plugin's folder, the session's) is a Windows one: a drive letter or a UNC prefix. */
+export const isWindowsPath = (path: string): boolean => /^[A-Za-z]:[\\/]/.test(path) || path.startsWith('\\\\')
+
+/** A path with the backslashes Windows programs expect. */
+export const toWindowsPath = (path: string): string => path.replace(/\//g, '\\')
+
+/** Text as one PowerShell single-quoted string. */
+export const psQuote = (text: string): string => `'${text.replace(/'/g, "''")}'`
+
+/** The command each app answers to on Windows (`start` finds it on the PATH or in the registry's App Paths). */
+const WINDOWS_COMMANDS: Readonly<Record<string, string>> = { Cursor: 'cursor', 'Google Chrome': 'chrome' }
+
+/** What opens `path` in the app Windows picks for it: PowerShell's `Invoke-Item`. */
+export const windowsDefaultArgv = (path: string): string[] => [
+  'powershell.exe',
+  '-NoProfile',
+  '-NonInteractive',
+  '-Command',
+  `Invoke-Item -LiteralPath ${psQuote(toWindowsPath(path))}`,
+]
+
+/**
+ * The command line for a path on Windows: Explorer with it selected, a folder
+ * in Explorer, a file in its app through `start`, else the app Windows picks.
+ */
+export const windowsOpenArgv = (path: string, isReveal: boolean, isFolder: boolean): string[] => {
+  const native = toWindowsPath(path)
+  if (isReveal) {
+    return ['explorer.exe', `/select,${native}`]
+  }
+  if (isFolder) {
+    return ['explorer.exe', native]
+  }
+  const command = WINDOWS_COMMANDS[appFor(path)?.app ?? '']
+  return command === undefined ? windowsDefaultArgv(path) : ['cmd.exe', '/d', '/c', 'start', '', command, native]
+}
+
+/** The app a command line chose (its name), or undefined where it is the system's own pick. */
+export const chosenApp = (argv: readonly string[]): string | undefined => {
+  if (argv[0] === 'cmd.exe') {
+    return Object.entries(WINDOWS_COMMANDS).find(([, command]) => command === argv[5])?.[0]
+  }
+  return argv[1] === '-a' ? argv[2] : undefined
+}
+
+/** Explorer answers 1 whatever it did, so for it 0 and 1 are both a success. */
+export const isOpenOk = (argv: readonly string[], exitCode: number): boolean => exitCode === 0 || (argv[0] === 'explorer.exe' && exitCode === 1)
+
+/** Moves a file or folder to the Recycle Bin, with PowerShell's .NET call. */
+export const windowsTrashArgv = (path: string): string[] => {
+  const target = psQuote(toWindowsPath(path))
+  return [
+    'powershell.exe',
+    '-NoProfile',
+    '-NonInteractive',
+    '-Command',
+    `Add-Type -AssemblyName Microsoft.VisualBasic; $p = ${target}; ` +
+      `if (Test-Path -LiteralPath $p -PathType Container) { [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory($p, 'OnlyErrorDialogs', 'SendToRecycleBin') } ` +
+      `else { [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($p, 'OnlyErrorDialogs', 'SendToRecycleBin') }`,
+  ]
+}

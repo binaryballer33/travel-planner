@@ -8,7 +8,7 @@ import type { FsEntry } from 'claude-code'
 import type { ExplorerArmed, ExplorerForm, ExplorerView, TreeEntry, TreeListing } from '../../types'
 import type { Tone } from './format'
 import { openLabel } from './apps'
-import { baseName, childPath, collapse, EMPTY_TREE, findEntry, isBelow, isEntryName, isInsideRoot, parentOf } from './tree'
+import { baseName, childPath, collapse, EMPTY_TREE, findEntry, isBelow, isEntryName, isInsideRoot, isTop, parentOf } from './tree'
 
 export const EMPTY_EXPLORER: ExplorerView = { tree: EMPTY_TREE, selected: null, form: null, edit: null, armed: null, ignored: {} }
 
@@ -222,7 +222,7 @@ export const relPath = (root: string, path: string): string => {
   if (path === root) {
     return baseName(root)
   }
-  return isBelow(root, path) ? path.slice(root === '/' ? 1 : root.length + 1) : path
+  return isBelow(root, path) ? path.slice(isTop(root) ? root.length : root.length + 1) : path
 }
 
 /** The tab's title: the project folder's name in capitals, as an editor's explorer heads it. */
@@ -249,7 +249,7 @@ export const newEntryPath = (root: string, dir: string, typed: string): Checked 
   if (!isInsideRoot(root, dir)) {
     return { isOk: false, reason: 'New entries go only inside the project folder.' }
   }
-  const path = parts.reduce((at, part) => `${at === '/' ? '' : at}/${part}`, dir)
+  const path = parts.reduce((at, part) => `${isTop(at) ? at : `${at}/`}${part}`, dir)
   return isInsideRoot(root, path) ? { isOk: true, path } : { isOk: false, reason: 'New entries go only inside the project folder.' }
 }
 

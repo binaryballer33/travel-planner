@@ -32,35 +32,62 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 export const isEntryName = (name: string): boolean =>
   name !== '' && name !== '.' && name !== '..' && !name.includes('/') && !name.includes('\u0000')
 
+// Paths are kept with forward slashes. On Windows they begin with a drive
+// (`C:/Users/me`) whose top is `C:/`; elsewhere they begin with `/`, the top.
+const DRIVE_TOP = /^[A-Za-z]:\/$/
+const DRIVE_PATH = /^[A-Za-z]:\//
+
+/** `/`, or a drive's top (`C:/`): the folder with nothing above it. */
+export const isTop = (path: string): boolean => path === '/' || DRIVE_TOP.test(path)
+
+/** True for `/a/b` and for `C:/a/b`. */
+export const isAbsolutePath = (path: string): boolean => path.startsWith('/') || DRIVE_PATH.test(path)
+
+/** A path as the pane keeps it: forward slashes and no trailing one but a top's (`C:\Users\me\` is `C:/Users/me`, `C:` is `C:/`). */
+export const toPosixPath = (path: string): string => {
+  const slashed = path.replace(/\\/g, '/')
+  const trimmed = slashed.replace(/\/+$/, '')
+  if (trimmed === '') {
+    return slashed.startsWith('/') ? '/' : ''
+  }
+  return /^[A-Za-z]:$/.test(trimmed) ? `${trimmed}/` : trimmed
+}
+
 /** `root`, or a path below it spelled without `.`, `..` or empty parts. */
 export const isInsideRoot = (root: string, path: string): boolean => {
-  if (!root.startsWith('/') || !path.startsWith('/') || root.includes('\u0000') || path.includes('\u0000')) {
+  if (!isAbsolutePath(root) || !isAbsolutePath(path) || root.includes('\u0000') || path.includes('\u0000')) {
     return false
   }
-  const rootParts = root === '/' ? [] : root.split('/').slice(1)
+  const rootParts = isTop(root) ? [] : root.split('/').slice(1)
   if (rootParts.some(part => !isEntryName(part))) {
     return false
   }
   if (path === root) {
     return true
   }
-  const prefix = root === '/' ? '/' : `${root}/`
+  const prefix = isTop(root) ? root : `${root}/`
   return path.startsWith(prefix) && path.slice(prefix.length).split('/').every(isEntryName)
 }
 
 /** The path of entry `name` of folder `dir`, or undefined for a name no entry has. */
 export const childPath = (dir: string, name: string): string | undefined =>
-  isEntryName(name) ? `${dir === '/' ? '' : dir}/${name}` : undefined
+  isEntryName(name) ? `${isTop(dir) ? dir : `${dir}/`}${name}` : undefined
 
 /** True when `path` lies below `dir` (not `dir` itself). */
-export const isBelow = (dir: string, path: string): boolean => path !== dir && path.startsWith(dir === '/' ? '/' : `${dir}/`)
+export const isBelow = (dir: string, path: string): boolean => path !== dir && path.startsWith(isTop(dir) ? dir : `${dir}/`)
 
 /** The last part of a path: `/a/b` reads `b`, `/` reads `/`. */
-export const baseName = (path: string): string => (path === '/' ? '/' : (path.split('/').pop() ?? path))
+export const baseName = (path: string): string => (isTop(path) ? path : (path.split('/').pop() ?? path))
 
-/** The folder a path lies in: `/a/b` lies in `/a`, `/a` in `/`. */
+/** The folder a path lies in: `/a/b` lies in `/a`, `/a` in `/`, `C:/a` in `C:/`. */
 export const parentOf = (path: string): string => {
+  if (isTop(path)) {
+    return path
+  }
   const cut = path.lastIndexOf('/')
+  if (cut > 0 && /^[A-Za-z]:$/.test(path.slice(0, cut))) {
+    return path.slice(0, cut + 1)
+  }
   return cut <= 0 ? '/' : path.slice(0, cut)
 }
 

@@ -27,7 +27,7 @@
       "name": "session-monitor",
       "source": "./plugins/session-monitor",
       "description": "Live session monitor: network, CPU, memory and energy per command, clickable command output, a commit-by-commit git file and diff browser, and a project file explorer that makes, edits, renames and deletes files and folders.",
-      "version": "0.5.1",
+      "version": "0.6.0",
       "category": "development",
       "keywords": [
         "session",

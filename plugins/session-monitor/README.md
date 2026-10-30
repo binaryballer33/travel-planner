@@ -3,6 +3,29 @@
 A Claude Code mod that shows, live and color coded, what a session costs your machine, how
 long it spent on the network and on commands, which websites it used, and what it changed.
 
+## Platforms
+
+It runs on macOS and on Windows 10/11, needing Python 3.9 or later (`python` on the PATH on
+Windows, `python3` on macOS); the sampler uses only the standard library.
+
+On Windows the same sampler reads the process counters through kernel32 and ntdll, and the Mac's
+figures (CPU, memory in use, network) through `GetSystemTimes`, `GlobalMemoryStatusEx` and
+`GetIfTable2`. What Windows does not offer is left out rather than invented:
+
+| Figure | On Windows |
+| --- | --- |
+| CPU, memory, disk, command lines, the process tree | measured, as on macOS |
+| Whole-PC network speed, CPU, memory, API latency | measured |
+| Energy and watts | **estimated** from CPU time (1.5 J per CPU-second), never measured |
+| Network per command, prompt and agent | not available: shown as `—` (Windows keeps no per-process byte counter a user may read) |
+| CPU of commands that end between two samples | not counted (Windows does not total a process's reaped children) |
+| Battery tab | not shown |
+| Ports tab | measured; dev servers are stopped as the process tree below their listener, and a server this plugin started is stopped as a whole |
+| Open, Reveal, Delete | Explorer, `start` / PowerShell, and the Recycle Bin, in place of Finder, `open` and the Trash |
+| ⌕ Find in conversation | copies the prompt's opening and asks you to press Ctrl+F, Ctrl+V (no keys are pressed for you) |
+
+Paths are kept with forward slashes inside the pane (`C:/Users/me/project`).
+
 ## Turning it on and off
 
 Install it with `/plugin marketplace add binaryballer33/shaqs-claude-plugins` then

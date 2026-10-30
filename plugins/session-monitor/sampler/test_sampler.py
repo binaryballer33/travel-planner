@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import socket
 import subprocess
@@ -22,9 +23,12 @@ from sampler import (
     Proc,
     Tracker,
     VmPages,
+    Windows,
     cpu_busy_pct,
     extract_bash_command,
     fresh_latency,
+    is_claude_argv,
+    is_tool_shell,
     memory_used,
     parse_netstat,
     parse_nettop,
@@ -417,6 +421,92 @@ class MacSmokeTests(unittest.TestCase):
         self.assertGreaterEqual(pct, 0.0)
         self.assertLessEqual(pct, 100.0)
         self.assertIn("memUsed", system)
+
+
+class WindowsParsingTests(unittest.TestCase):
+    """Command lines as Windows prints them: backslashes, `.exe`, a drive letter."""
+
+    def test_a_tool_shell_is_found_by_its_snapshot_whatever_the_slashes(self) -> None:
+        argv = [
+            "C:\\Program Files\\Git\\bin\\bash.exe",
+            "-c",
+            "source C:\\Users\\me\\.claude\\shell-snapshots\\snapshot-bash-1.sh && eval 'ls' < /dev/null",
+        ]
+        self.assertTrue(is_tool_shell(argv))
+        self.assertFalse(is_tool_shell(["C:\\Windows\\System32\\cmd.exe", "/c", "dir"]))
+
+    def test_a_service_is_named_by_its_program_and_the_files_it_runs(self) -> None:
+        label = service_label(["C:\\Program Files\\nodejs\\node.exe", "C:\\Users\\me\\server\\index.js", "--port", "3000"])
+        self.assertEqual(label, "node index.js 3000")
+
+    def test_the_engine_is_claude_or_claude_exe_or_anything_inside_its_app(self) -> None:
+        self.assertTrue(is_claude_argv(["C:\\Users\\me\\AppData\\Local\\Claude\\claude-code\\2.1.0\\claude.exe", "--verbose"]))
+        self.assertTrue(is_claude_argv(["C:\\tools\\claude.exe"]))
+        self.assertTrue(is_claude_argv(["/usr/local/bin/claude"]))
+        self.assertFalse(is_claude_argv(["C:\\Program Files\\Git\\bin\\bash.exe", "-c"]))
+        self.assertFalse(is_claude_argv([]))
+
+
+@unittest.skipUnless(sys.platform == "win32", "the Win32 counters are Windows only")
+class WindowsSmokeTests(unittest.TestCase):
+    """The ctypes calls against this PC: this very process is the subject."""
+
+    def setUp(self) -> None:
+        self.win = Windows()
+
+    def test_reads_the_ram_and_the_memory_in_use(self) -> None:
+        total = self.win.mem_total
+        assert total is not None
+        used = self.win.memory_used()
+        assert used is not None
+        self.assertGreater(used, 0)
+        self.assertLess(used, total)
+
+    def test_reads_cpu_ticks_and_a_share_between_two(self) -> None:
+        first = self.win.cpu_ticks()
+        assert first is not None
+        self.assertGreater(first.idle, 0)
+        tracker = Tracker(root=ROOT, me=ME, ncpu=8)
+        tracker.set_machine(first, self.win.memory_used(), self.win.mem_total, None)
+        time.sleep(0.2)
+        tracker.set_machine(self.win.cpu_ticks(), self.win.memory_used(), self.win.mem_total, None)
+        pct = system_of(tracker, 1.0)["cpuPct"]
+        self.assertGreaterEqual(pct, 0.0)
+        self.assertLessEqual(pct, 100.0)
+
+    def test_counts_this_process(self) -> None:
+        me = os.getpid()
+        proc = self.win.rusage(me, 0, time.time(), self.win.mach_now())
+        assert proc is not None
+        self.assertEqual(proc.pid, me)
+        self.assertGreater(proc.mem, 0)
+        self.assertGreaterEqual(proc.peak_mem, proc.mem)
+        self.assertGreater(proc.own_cpu, 0)
+        self.assertLessEqual(abs(proc.started_at - time.time()), 3600)
+
+    def test_reads_this_process_command_line_and_its_parent(self) -> None:
+        me = os.getpid()
+        argv = self.win.argv(me)
+        self.assertTrue(argv and os.path.basename(argv[0]).lower().startswith("python"))
+        parent = self.win.parent(me)
+        assert parent is not None
+        self.assertIn(me, self.win.children(parent))
+
+    def test_a_child_is_seen_below_its_parent_and_its_command_line_read(self) -> None:
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(5)"])
+        try:
+            time.sleep(0.3)
+            self.assertIn(child.pid, self.win.children(os.getpid()))
+            self.assertIn("time.sleep(5)", " ".join(self.win.argv(child.pid)))
+        finally:
+            child.kill()
+            child.wait()
+
+    def test_reads_the_network_totals_and_has_no_per_process_figure(self) -> None:
+        totals = self.win.interfaces()
+        assert totals is not None
+        self.assertGreaterEqual(totals[0], 0)
+        self.assertIsNone(self.win.nettop())
 
 
 if __name__ == "__main__":

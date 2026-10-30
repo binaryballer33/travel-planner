@@ -157,6 +157,7 @@ import {
   findEntry,
   forRoot,
   isBelow,
+  isAbsolutePath,
   isInsideRoot,
   isWanted,
   listedFolders,
@@ -165,6 +166,7 @@ import {
   readTreePress,
   setLoading,
   toggleHidden,
+  toPosixPath,
   TREE_SCRIPT,
   treeArgv,
   withListing,
@@ -206,7 +208,7 @@ import {
   type ExplorerPress,
 } from './lib/explorer'
 import { editorFieldKey, formFieldKey } from './view/explorer'
-import { openArgv, openLabel } from './lib/apps'
+import { chosenApp, isOpenOk, isWindowsPath, openArgv, openLabel, windowsDefaultArgv, windowsOpenArgv, windowsTrashArgv } from './lib/apps'
 // --- end explorer ---
 import { spaceFor, type Actions, type PaneData, type Ui } from './view/kit'
 import type { RowPress, RowProps } from './view/row'
@@ -673,6 +675,15 @@ const runner =
       return { exitCode: 127, stdout: '', stderr: errorText(error) }
     }
   }
+
+/** Whether the session works in a Windows folder (`C:\...`): its own tell, since the engine names no platform. */
+const onWindows = async ($: EngineInterface): Promise<boolean> => {
+  try {
+    return isWindowsPath(await $.session.cwd())
+  } catch {
+    return false
+  }
+}
 
 const mtimeOf =
   ($: EngineInterface): MtimeOf =>
@@ -1145,6 +1156,10 @@ const jumpToPrompt = async ($: EngineInterface, id: string, press: UiPressArgume
       $.ui.toast(`Could not copy the prompt's opening: ${copied.reason}`, { timeoutMs: 8_000 })
       return
     }
+    if (await onWindows($)) {
+      $.ui.toast('Copied the prompt’s opening: press Ctrl+F, then Ctrl+V, to find it in the conversation.', { timeoutMs: 8_000 })
+      return
+    }
     // Press ⌘F, ⌘V and Return for the person, where macOS lets the app it holds responsible do so (findAccessProbe).
     const pressed = await runner($)(findKeystrokes())
     const said = pressed.stdout.trim()
@@ -1175,6 +1190,9 @@ const setFindAccess = async ($: EngineInterface, access: FindAccess): Promise<vo
  * under Accessibility. Undefined when the probe answered nothing usable.
  */
 const probeFindAccess = async ($: EngineInterface, isAsking: boolean): Promise<FindAccess | undefined> => {
+  if (await onWindows($)) {
+    return undefined // only macOS asks before an app presses keys
+  }
   const result = await runner($)(findAccessProbe(isAsking))
   const access = result.exitCode === 0 ? readFindAccess(result.stdout) : undefined
   if (access !== undefined) {
@@ -1980,6 +1998,9 @@ const sessionEnergy = async ($: EngineInterface): Promise<number> => {
 }
 
 const readBattery = async ($: EngineInterface): Promise<BatteryReading | null> => {
+  if (await onWindows($)) {
+    return null // the battery's registers are read from macOS's ioreg
+  }
   const result = await runner($)(['ioreg', '-r', '-c', 'AppleSmartBattery'])
   if (result.exitCode !== 0) {
     return null
@@ -2092,9 +2113,9 @@ let treeTimer: { cancel: () => void } | undefined
 /** The session's working folder, the tree's root; the repository's root when the session cannot say. */
 const treeRootOf = async ($: EngineInterface): Promise<string> => {
   try {
-    const cwd = await $.session.cwd()
-    if (cwd.startsWith('/')) {
-      return cwd.replace(/\/+$/, '') || '/'
+    const cwd = toPosixPath(await $.session.cwd())
+    if (isAbsolutePath(cwd)) {
+      return cwd
     }
   } catch {
     // Falls back below.
@@ -2251,19 +2272,21 @@ const openPathIn = async ($: EngineInterface, root: string, path: string, isReve
     return
   }
   const isFolder = !isReveal && (await $.fs.stat(path).catch(() => undefined))?.kind === 'dir'
-  const argv = openArgv(path, isReveal, isFolder)
+  const isWindows = isWindowsPath(path)
+  const argv = isWindows ? windowsOpenArgv(path, isReveal, isFolder) : openArgv(path, isReveal, isFolder)
   let result = await runner($)(argv)
-  const chosen = argv[1] === '-a' ? argv[2] : undefined
-  if (result.exitCode !== 0 && chosen !== undefined) {
-    const fallback = await runner($)(['open', path])
-    if (fallback.exitCode === 0) {
+  const chosen = chosenApp(argv)
+  if (!isOpenOk(argv, result.exitCode) && chosen !== undefined) {
+    const fallbackArgv = isWindows ? windowsDefaultArgv(path) : ['open', path]
+    const fallback = await runner($)(fallbackArgv)
+    if (isOpenOk(fallbackArgv, fallback.exitCode)) {
       const reason = oneLine(result.stderr.trim() || `exit code ${result.exitCode}`, 120)
       $.ui.toast(`${chosen} could not open ${oneLine(baseName(path), 80)} (${reason}): opened it in its default app.`, { timeoutMs: 6_000 })
       return
     }
     result = fallback
   }
-  if (result.exitCode !== 0) {
+  if (!isOpenOk(argv, result.exitCode)) {
     const reason = oneLine(result.stderr.trim() || `exit code ${result.exitCode}`, 160)
     $.ui.toast(`Could not ${isReveal ? 'reveal' : 'open'} ${oneLine(baseName(path), 80)}: ${reason}`, { timeoutMs: 6_000 })
   }
@@ -2628,6 +2651,10 @@ const confirmExplorer = async ($: EngineInterface, key: string): Promise<boolean
 
 /** Moves an entry to the Finder's Trash: Apple's `trash`, else the Finder itself. */
 const trashEntry = async ($: EngineInterface, path: string): Promise<{ isOk: true } | { isOk: false; reason: string }> => {
+  if (isWindowsPath(path)) {
+    const recycled = await runner($)(windowsTrashArgv(path))
+    return recycled.exitCode === 0 ? { isOk: true } : { isOk: false, reason: oneLine(recycled.stderr.trim() || `exit code ${recycled.exitCode}`, 200) }
+  }
   const argv = (await $.fs.exists(TRASH_PATH))
     ? [TRASH_PATH, path]
     : ['osascript', '-e', 'on run argv', '-e', 'set target to POSIX file (item 1 of argv)', '-e', 'tell application "Finder" to delete target', '-e', 'end run', path]
@@ -2791,8 +2818,9 @@ const revealArtifact = async ($: EngineInterface, id: string): Promise<void> => 
     $.ui.toast('That file is no longer there.', { timeoutMs: 4_000 })
     return
   }
-  const result = await runner($)(['open', '-R', path])
-  if (result.exitCode !== 0) {
+  const revealArgv = isWindowsPath(path) ? windowsOpenArgv(path, true, false) : ['open', '-R', path]
+  const result = await runner($)(revealArgv)
+  if (!isOpenOk(revealArgv, result.exitCode)) {
     $.ui.toast(`Could not reveal ${oneLine(baseName(path), 80)}: ${oneLine(result.stderr.trim() || `exit code ${result.exitCode}`, 160)}`, { timeoutMs: 6_000 })
   }
 }
@@ -2829,7 +2857,8 @@ const pythonPath = async ($: EngineInterface): Promise<string> => {
       return candidate
     }
   }
-  return 'python3'
+  // Windows has `python` (or the `py` launcher), not `python3`.
+  return (await onWindows($)) ? 'python' : 'python3'
 }
 // --- end file tree ---
 
@@ -2890,7 +2919,7 @@ const runSampler = async ($: EngineInterface): Promise<void> => {
   await update($, live, (current): LiveMetrics => ({
     ...current,
     status: isUnsupported ? 'unsupported' : 'error',
-    message: `${isUnsupported ? 'Live metrics need macOS' : 'The metrics sampler stopped'}: ${oneLine(stderr || 'no output', 240)}${willRetry ? ' (restarting…)' : ''}`,
+    message: `${isUnsupported ? 'Live metrics need macOS or Windows' : 'The metrics sampler stopped'}: ${oneLine(stderr || 'no output', 240)}${willRetry ? ' (restarting…)' : ''}`,
   }))
   // Its last figures are no longer live: dashes until it is back.
   await refreshStatus($)

@@ -8,11 +8,17 @@ import contextlib
 import io
 import json
 import os
+import sys
 import tempfile
 import unittest
 from typing import Dict, List
 
 from tree import Entry, is_inside, kind_of, list_folder, main, sort_key, tree_size
+
+
+IS_WINDOWS = sys.platform == "win32"
+MISSING = "The system cannot find the path specified" if IS_WINDOWS else "No such file or directory"
+POSIX_ONLY = unittest.skipIf(IS_WINDOWS, "POSIX modes, links and permissions")
 
 
 def write(path: str, size: int) -> None:
@@ -99,6 +105,7 @@ class EntriesTest(FolderTest):
         self.assertFalse(entries["app.py"].is_hidden)
         self.assertEqual(list_folder(self.root).hidden_total, 2)
 
+    @POSIX_ONLY
     def test_modes_read_as_ls_prints_them(self) -> None:
         write(self.path("secret.txt"), 1)
         os.chmod(self.path("secret.txt"), 0o640)
@@ -121,6 +128,7 @@ class EntriesTest(FolderTest):
         self.assertEqual(names, ["a", "B", "c.txt", "D.txt"])
         self.assertLess(sort_key("Z", True), sort_key("a", False))
 
+    @POSIX_ONLY
     def test_symlinks_are_not_followed(self) -> None:
         outside = tempfile.TemporaryDirectory()
         self.addCleanup(outside.cleanup)
@@ -153,6 +161,7 @@ class EntriesTest(FolderTest):
         self.assertFalse(list_folder(self.root).truncated)
 
     @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root reads everything")
+    @POSIX_ONLY
     def test_an_unreadable_folder_is_an_entry_error_not_a_crash(self) -> None:
         write(self.path("locked", "a"), 1)
         write(self.path("open", "inner", "b"), 2)
@@ -174,14 +183,17 @@ class GuardsTest(FolderTest):
         os.makedirs(self.path("inner"))
         self.assertIsNone(list_folder(self.path("inner"), self.root).error)
         self.assertEqual(list_folder(self.path("inner", "..", ".."), self.root).error, "outside the working folder")
-        self.assertTrue(is_inside("/a/b", "/a"))
-        self.assertTrue(is_inside("/a", "/a"))
-        self.assertFalse(is_inside("/ab", "/a"))
-        self.assertTrue(is_inside("/x", "/"))
+        sep = os.sep
+        self.assertTrue(is_inside(f"{sep}a{sep}b", f"{sep}a"))
+        self.assertTrue(is_inside(f"{sep}a", f"{sep}a"))
+        self.assertFalse(is_inside(f"{sep}ab", f"{sep}a"))
+        self.assertTrue(is_inside(f"{sep}x", sep))
+        if IS_WINDOWS:
+            self.assertTrue(is_inside("C:\\Users\\Me\\proj", "c:\\users\\me"))
 
     def test_a_missing_folder_is_an_error_field(self) -> None:
         listing = list_folder(self.path("gone"))
-        self.assertEqual(listing.error, "No such file or directory")
+        self.assertEqual(listing.error, MISSING)
         self.assertEqual(kind_of(0o100644), "file")
 
     def test_the_command_prints_one_json_object(self) -> None:
@@ -208,7 +220,7 @@ class GuardsTest(FolderTest):
         with contextlib.redirect_stdout(out):
             main([self.path("gone"), "--root", self.root])
         answer = json.loads(out.getvalue())
-        self.assertEqual((answer["entries"], answer["error"]), ([], "No such file or directory"))
+        self.assertEqual((answer["entries"], answer["error"]), ([], MISSING))
 
 
 if __name__ == "__main__":

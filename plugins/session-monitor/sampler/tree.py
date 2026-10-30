@@ -128,6 +128,7 @@ def error_text(error: OSError) -> str:
 
 def is_inside(path: str, root: str) -> bool:
     """True when `path` is `root` or below it, both already resolved."""
+    path, root = os.path.normcase(path), os.path.normcase(root)
     if path == root:
         return True
     prefix = root if root.endswith(os.sep) else root + os.sep
