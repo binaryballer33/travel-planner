@@ -1,10 +1,10 @@
 {
-  "name": "travel-planner",
+  "name": "shaqs-claude-plugins",
   "owner": {
     "name": "binaryballer33"
   },
   "metadata": {
-    "description": "The travel-planner skill for Claude Code",
+    "description": "Shaq's Claude Code plugins",
     "version": "1.0.4"
   },
   "plugins": [
@@ -21,6 +21,22 @@
         "hotels",
         "budget",
         "dashboard"
+      ]
+    },
+    {
+      "name": "session-monitor",
+      "source": "./plugins/session-monitor",
+      "description": "Live session monitor: network, CPU, memory and energy per command, clickable command output, a commit-by-commit git file and diff browser, and a project file explorer that makes, edits, renames and deletes files and folders.",
+      "version": "0.5.1",
+      "category": "development",
+      "keywords": [
+        "session",
+        "monitor",
+        "cpu",
+        "memory",
+        "git",
+        "explorer",
+        "pane"
       ]
     }
   ]

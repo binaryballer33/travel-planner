@@ -1,0 +1,7 @@
+{
+  "name": "session-monitor",
+  "version": "0.5.1",
+  "description": "Live session monitor: network, CPU, memory and energy per command, clickable command output, a commit-by-commit git file and diff browser, and a project file explorer that makes, edits, renames and deletes files and folders.",
+  "author": { "name": "Shaquille Rashad Mandy" },
+  "types": "./types/index.d.ts"
+}

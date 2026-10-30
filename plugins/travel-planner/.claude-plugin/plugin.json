@@ -5,11 +5,11 @@
   "author": {
     "name": "binaryballer33"
   },
-  "homepage": "https://github.com/binaryballer33/travel-planner",
-  "repository": "https://github.com/binaryballer33/travel-planner",
+  "homepage": "https://github.com/binaryballer33/shaqs-claude-plugins",
+  "repository": "https://github.com/binaryballer33/shaqs-claude-plugins",
   "license": "MIT",
   "icon": "./.claude-plugin/icon.png",
-  "privacyPolicyUrl": "https://github.com/binaryballer33/travel-planner/blob/main/plugins/travel-planner/PRIVACY.md",
+  "privacyPolicyUrl": "https://github.com/binaryballer33/shaqs-claude-plugins/blob/main/plugins/travel-planner/PRIVACY.md",
   "keywords": [
     "travel",
     "trip",

@@ -75,7 +75,7 @@ button.primary { background: var(--accent); color: var(--accent-ink); border-col
     <div class="err" id="err"></div>
     <div>
       <div class="hint" style="margin-bottom:6px">Your prompt</div>
-      <div class="out" id="out">/travel-planner …</div>
+      <div class="out" id="out">/travel-planner:full-search …</div>
     </div>
     <div class="btns">
       <button type="button" class="primary" id="copy">Copy prompt</button>
@@ -162,7 +162,7 @@ button.primary { background: var(--accent); color: var(--accent-ink); border-col
     const err = [];
     const ci = $('checkin').value, co = $('checkout').value;
     if (ci && co && co <= ci) err.push('Check-out must be after check-in.');
-    const parts = ['/travel-planner', placeArg('origin') || '<origin>', placeArg('dest') || '<destination>', usDate(ci) || '<mm/dd/yyyy>', usDate(co) || '<mm/dd/yyyy>'];
+    const parts = ['/travel-planner:full-search', placeArg('origin') || '<origin>', placeArg('dest') || '<destination>', usDate(ci) || '<mm/dd/yyyy>', usDate(co) || '<mm/dd/yyyy>'];
     const trav = parseInt($('travelers').value, 10);
     if (trav > 1) parts.push(String(trav));
     const extras = [];

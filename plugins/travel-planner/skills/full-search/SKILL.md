@@ -1,5 +1,5 @@
 ---
-name: travel-planner
+name: full-search
 description: >
   Plan and price a whole trip from origin, destination and dates (mm/dd/yyyy or yyyy-mm-dd; cities or
   airport codes). Defaults: 1 traveler, 1-week stay, round trip. Searches Airbnb, Booking.com, Expedia,
@@ -8,6 +8,9 @@ description: >
   links, then builds a self-contained HTML dashboard (Budget / Mid / Upper / Luxury / Custom tabs,
   checkboxes, map) and emails it to the requester. Use it for any trip, vacation, travel budget,
   flights plus hotel, "how much to go to X", or booking links, even without the word "dashboard".
+  Also refreshes an existing trip: "update the prices", "refresh the Pattaya trip", "are these prices
+  still right" re-reads current flight, stay and rental car prices (and anything else dated) in the same
+  dashboard, shows what changed, and re-sends it.
 model: sonnet
 effort: high
 ---
@@ -47,10 +50,10 @@ The dashboard is only as good as the research behind it. Most of your time goes 
 ## Invocation and arguments
 
 ```
-/travel-planner <origin> <destination> <check-in> <check-out> [travelers] [one way]
-/travel-planner LAX Lisbon 11/10/2026 11/17/2026 2
-/travel-planner TPA GIG 01/15/2027 02/15/2027 1 one way
-/travel-planner rio de janeiro to belo horizonte 01/15/2027 one way   # 1 traveler, nothing else asked
+/travel-planner:full-search <origin> <destination> <check-in> <check-out> [travelers] [one way]
+/travel-planner:full-search LAX Lisbon 11/10/2026 11/17/2026 2
+/travel-planner:full-search TPA GIG 01/15/2027 02/15/2027 1 one way
+/travel-planner:full-search rio de janeiro to belo horizonte 01/15/2027 one way   # 1 traveler, nothing else asked
 ```
 
 Plain English works the same ("LAX to Lisbon Nov 10–17 2026 for 2"). Casing never matters for
@@ -110,6 +113,77 @@ Open your reply with one line that states the resolved parameters and the defaul
 example: "Planning LAX → Lisbon (LIS), Nov 10–17 2026, 7 nights, 2 travelers, USD, economy; say if
 any of that should change." Then start researching without waiting for a reply.
 
+## Scope: full run or limited search (user's instruction Oct 30 2026)
+
+Not every request wants the whole dashboard. Decide the scope from the prompt before Step 1 and say it
+in the opening line ("Limited search: stays only, Lisbon, Nov 10–17 (7 nights), all four tiers").
+
+| The user says | Scope | What to run |
+|---|---|---|
+| origin + destination + dates, nothing narrower | **Full** | every step as written |
+| "stays / hotels / where to stay in X" | **Stays only** | tourist neighborhoods + stays on every lodging site; map; weather and entry rules only if asked |
+| "flights only", "just flights A to B" | **Flights only** | flight sites, bag fees |
+| "cars", "activities", "food", "SIM", "transfer" alone | that category only | only that category's research |
+| any list ("stays and activities") | those categories | only those |
+| "budget and mid only", "just budget", "no luxury" | **Tier-limited** | only those tiers (combine with any scope) |
+| "top 3 neighborhoods", "5 per site", "Booking and Airbnb only" | **Depth/vendor-limited** | cap neighborhoods, per-site counts, or sites as stated |
+
+Rules for a limited run:
+
+- **Ask for as little as possible.** A destination and a check-in date are enough for stays, activities,
+  food, SIM or weather; the origin is only needed for flights, transfers from an airport, ground
+  transport and entry rules. "7 nights" or no check-out means check-out = check-in + 7. If the prompt
+  gives a month but no day, ask once for the check-in date.
+- **Only research and build what was asked.** Skip the other stages, helpers and fetch scripts
+  (`fetch_pois.py` still runs when stays are in scope, `fetch_weather.py` only if weather is in scope).
+- **Build the dashboard for the scope.** Set `categories` in `trip.json` to just the requested ones, e.g.
+  `"categories": [{"id": "lodging", "label": "Lodging"}]`, and the page shows only those cards (tested
+  with a stays-only build). Origin may be `{"city": "", "iata": ""}` when there are no flights. Ignore
+  build warnings about sections outside the scope; fix errors. Tier tabs and the Custom tab still work
+  and total only what is in scope. Do not use `--partial` for this: it adds "still searching" banners.
+- **Name and title it for the scope:** `<destination>-<yyyy-mm>-stays-dashboard.html`, title
+  "Lisbon stays · Mon 10 – Mon 17 Nov 2026 (7 Nights)".
+- **Everything else is unchanged:** Chrome only, search links with dates, verified vs estimate labels,
+  the run timer, build-as-you-go, send the file, then email it (Step 6; the summary says what was
+  skipped).
+- **Easy to widen later.** Keep the trip folder and `trip.json`; when the user later says "now add
+  flights", run only the new category's research, merge it, drop it from the scope limits (extend
+  `categories`) and rebuild the same file.
+
+## Where trips are saved (user's instruction, Oct 30 2026)
+
+Every trip goes in its own folder inside `~/travel-planner-trips/` (on Windows
+`C:\Users\<user>\travel-planner-trips\`), whatever folder the session started in. Create the parent
+folder if it is missing, then one folder per trip named `<destination>-<yyyy-mm>[-<scope>]`
+(`bangkok-pattaya-2026-10`, `lisbon-2026-11-stays`). That trip folder is "the trip folder" everywhere
+in this skill: the run timer file, `trip.json`, helper outputs and subfolders, the dashboard and the
+email all live there, and helpers get its full path in their briefs. Never save trips in a session's
+scratch folder (it is deleted with the session). Resuming or widening a trip reuses its folder.
+
+```bash
+mkdir -p ~/travel-planner-trips/<destination>-<yyyy-mm>
+```
+
+## Run timer (start time and end time, user's instruction Oct 30 2026)
+
+The user wants to know how long a run takes. **First action of every run**, before any research:
+
+```bash
+python3 ${CLAUDE_SKILL_DIR}/scripts/run_timer.py start --file <trip folder>/.run_timer.json
+```
+
+State the start time in the opening line ("Started 7:05 PM"). **Last action before the email** (after the
+final build is verified; rebuild afterwards so the footer carries it):
+
+```bash
+python3 ${CLAUDE_SKILL_DIR}/scripts/run_timer.py end --file <trip folder>/.run_timer.json --trip trip.json
+```
+
+It prints "Started … · Finished … · Took 2 h 7 min", stores `trip.run` {started_at, finished_at, elapsed}
+and appends the line to `trip.notes`. Put that same line at the top of the closing message and in
+`closing-summary.md`, so the email shows it. If a run is resumed in a later session, keep the original
+start time (the file is already there) and say if the clock includes time spent waiting for the user.
+
 ## Step 1 — Generate the starting search links
 
 ```bash
@@ -131,6 +205,43 @@ Read `references/research-playbook.md` before the first search. It covers tool c
 prices off each site, how to capture the exact listing URL, what to do about anti-bot pages, and how
 to label what you found. Read `references/tiers.md` for what counts as budget / mid / upper / luxury
 in each category.
+
+### Tier order (user's standing instruction, Oct 30 2026): budget + mid first, upper + luxury last
+
+Research runs in **two phases**. Everything in this step that names tiers applies to the phase you are in:
+
+- **Phase A — Budget and Mid-tier, every category.** Run all seven stages below (flights, stays,
+  transfer / SIM / entry, cars and ground transport, activities and day trips, food and restaurants,
+  map places) for the **budget and mid tiers only**: economy flight searches (cheapest 5 → budget,
+  next 5 → mid), hostel / guesthouse / private-room stays and 3★ / entire-flat stays, budget and mid
+  cars, tours and daily spend, basic and standard insurance. Do **not** open business-class searches,
+  4★/5★ star filters or private/luxury tours in Phase A. Mark `upper` and `luxury` as pending
+  (`--partial` plus the tier tabs show "still searching"), and treat only the Budget, Mid-tier and Custom
+  tabs as live. Finish with a full Phase A build, verification, and **send the file to the user** (and
+  tell them the upper/luxury tabs are still being filled in). Entry rules, weather, SIM, transfer, local
+  food, restaurants, day trips and ground transport are tier-independent, so they belong to Phase A.
+- **Phase B — Upper class and Luxury, right after Phase A (user's instruction, Oct 30 2026).** Never stop
+  after Phase A to ask whether to continue: the moment Phase A's research is done and its dashboard is
+  built and sent, launch every Phase B helper at once, and keep merging and rebuilding as each lands.
+  Phase B tasks of a category may start as soon as that category's Phase A helper has finished (a
+  site's budget/mid flights done, then its business search), so no browser sits idle. Business / first
+  flight searches (cheapest 5 → upper, next 5 → luxury), 4★ / boutique and 5★ / luxury-brand stays per
+  neighborhood, premium cars or private drivers, small-group and private tours, fine dining and
+  chauffeured transfers, comprehensive insurance. Merge into the same `trip.json`, run the final build
+  without `--partial`/`--map-pending`, verify, send, then email (Step 6).
+
+**Build continuously (user's standing instruction, Oct 30 2026).** The moment any task finishes (one
+site's flights, one helper's stays, the transfer, the SIM list, entry rules, weather, a food or
+restaurant batch), merge its JSON into `trip.json`, rebuild the dashboard to the same output path
+(`--partial` for sections still open) and send it. Nothing waits for an unrelated task to finish; only
+wait when a step truly depends on another (the transfer needs the default stay and arrival airport,
+`fetch_pois.py` needs the ticked stays, the email needs the final build). Start independent tasks
+(helpers, `fetch_weather.py`, `fetch_pois.py`, exchange rate) in the background as soon as their inputs
+exist, and merge each result as it lands rather than in one batch at the end.
+
+Mixed items (a stay or flight that fits several tiers) go in the phase of the lowest tier they serve.
+If the user asks for Phase A only, stop after the Phase A send and email it (Step 6); say what Phase B
+would add.
 
 Non-negotiables, because they are the whole point of the deliverable:
 
@@ -332,6 +443,12 @@ blocking the pane. Call `tabs_context_mcp` (with `createIfEmpty: true`), open yo
 browser, with their sign-ins: search only, never act on an
 account, never sign out, and reject non-essential cookies only.
 
+**Claude in Chrome is the browser for this skill (user's instruction, Oct 30 2026).** Every search, price
+read and helper runs in Claude in Chrome. Before starting, call `tabs_context_mcp` (`createIfEmpty: true`); if it
+reports "not connected", retry once, then ask the user to open Chrome with the extension signed in rather than
+switching to the built-in pane. Start every helper with the same instruction. Use the pane only for the
+human-check handoff below, or when the user says to.
+
 **Fallback when Chrome does not work** (the extension is not connected, a tool call fails twice, or
 a site still shows a robot check / "Security Check — Continue" / a form that never submits there):
 
@@ -352,7 +469,11 @@ Say which browser read each price in the item `details` ("read in your Chrome", 
 after you confirmed"). With no browser at all, fall back to `WebFetch`/`WebSearch` and label every
 result an estimate. `references/research-playbook.md` §4c has the per-site quirks.
 
-### Search order: seven stages, a dashboard update after each
+### Search order: seven stages, a dashboard update after each (Phase A first, then Phase B)
+
+Run these seven stages first for **budget + mid only (Phase A)**. When stage 7 of Phase A is built and
+sent, repeat stages 1, 2, 4, 5 and 6 for **upper + luxury only (Phase B)**, then do the final build and
+email. Stages 3 and 7's tier-independent work is not repeated.
 
 The user set this order: flights first, stays second, then the rest in the order that is fastest and
 lets each stage feed the next. After every stage, rebuild to the same output path and send the file
@@ -443,9 +564,9 @@ The script validates the JSON (required fields, dates, tier and category ids, ho
 prints a per-tier total so you can quote it, and writes the HTML. Fix every error it reports; treat
 its warnings (missing coordinates, many estimates) as a to-do list, not noise.
 
-Save the output in the user's working directory (or a `trips/` folder they name) with a descriptive
-name: `<destination>-<yyyy-mm>-trip-dashboard.html`. Keep `trip.json` next to it so the dashboard
-can be rebuilt after edits.
+Save the output in the trip's own folder under `~/travel-planner-trips/` (see "Where trips are saved")
+with a descriptive name: `<destination>-<yyyy-mm>-trip-dashboard.html`. Keep `trip.json` next to it so
+the dashboard can be rebuilt after edits.
 
 ## Step 5 — Verify, then deliver
 
@@ -479,9 +600,29 @@ Your closing message to the user should contain, in this order:
 Keep prices out of prose except in the table. Do not paste the item list into chat; the dashboard
 is the item list.
 
+## Step 5b — Organize the trip folder (user's instruction, Oct 30 2026)
+
+Every run ends with a tidy trip folder: one subfolder per category, no loose working files. Helpers write
+their JSON straight into the category folder (`stays/`, `flights/`, `food/`, `activities/`, `transport/`,
+`transfer-sim/`, `insurance/`, `map/`, `info/`; `briefs/` for their briefs, `work/` for scratch), so tell each
+helper the full path in its brief. Scripts read helper files with a recursive glob
+(`glob.glob('**/stays_*.json', recursive=True)`), and a script kept in `work/` finds the trip folder as its
+parent. When every helper has finished and the final build is verified, before the email, run:
+
+```bash
+python ${CLAUDE_SKILL_DIR}/scripts/organize_trip.py <trip folder>          # add --dry-run to preview
+```
+
+It moves stays files to `stays/`, flights to `flights/`, local food, restaurants and daily spend to `food/`,
+activities and day trips to `activities/`, buses and trains to `transport/`, SIM and airport transfer to
+`transfer-sim/`, insurance to `insurance/`, map places and hospitals to `map/`, weather and entry rules to
+`info/`, briefs to `briefs/`, and logs, flags and one-off scripts to `work/`. `trip.json`, the dashboard
+`.html`, the `.eml`, `closing-summary.md`, `email-preview.html` and the run timer stay at the top. It is safe to
+run twice and never overwrites. Rebuild commands then use `trip.json` at the top as before.
+
 ## Step 6 — Email the result
 
-Every run ends with this step: when the final build is delivered, email it to the requester without being
+Every run ends with this step: when the final build is delivered (after Phase B, or after Phase A when the user asked for budget + mid only), email it to the requester without being
 asked and without asking for confirmation, at the address they gave (pass it with `--to`); if none is known,
 ask for it (one question) and send when they reply (skip the email only if they decline).
 **Send only when everything is finished**: every stage researched and merged, the photos fetched, and the map
@@ -525,6 +666,47 @@ mid-run):
 Say in the closing message whether the email was sent, drafted or only prepared. Never claim it was sent
 unless a tool confirmed it.
 
+## Refresh: update out-of-date prices in an existing dashboard (user's instruction, Oct 30 2026)
+
+Prices move daily. When the user asks to update, refresh or re-check a trip made earlier ("update the
+prices", "refresh my Pattaya trip", "is this still right?"), do not start a new trip. Reuse the same trip
+folder, `trip.json` and dashboard file name, re-read today's prices, and rebuild in place.
+
+1. **Find the trip.** It is the newest matching folder in `~/travel-planner-trips/` (ask only if several
+   fit). Read its `trip.json`. If check-in is today or already past, say so and offer a new search with new
+   dates instead (the scan warns about this).
+2. **Scan.** `python ${CLAUDE_SKILL_DIR}/scripts/refresh_trip.py scan <trip folder>/trip.json`
+   lists every line older than 3 days (`--days N` to change; estimates always count) by provider and writes
+   `<trip folder>/refresh/worklist.json`. Add `--categories flights,lodging,car` when the user names
+   categories ("just flights and stays", "only the rental car"), or `--defaults-only` for a quick pass
+   over the lines that make up the tier totals. A quick refresh can be limited to that and the user told so.
+3. **Re-read the prices (Sonnet / high helpers in the user's Chrome, same safety rules and pacing as the
+   original run).** One helper per one or two providers, each given its slice of the worklist, in this order:
+   flights, stays, rental cars, then transfers, activities, buses and the rest if in scope. For each line the
+   helper opens its `url` (the dated listing), reads today's price on the page the same way the original
+   price was read (same unit and basis: per night vs 3-night total, taxes in or out, per person), and notes
+   the rating and review count if shown. Lines on ticked-by-default rows come first. Helpers write
+   `refresh/updates_<provider>.json`:
+   `{"updates": [{"id", "price"}, {"id", "unavailable": true, "note": "sold out"}, {"id", "unreadable": true,
+   "note": "bot check"}], "add": [new cheaper or better options found along the way]}`.
+   A line that cannot be read stays as it was (old price, old date): never guess, never mark an estimate as
+   verified. Unavailable lines get `"unavailable": true`; a bot check on a site means stop that site and mark
+   its lines unreadable (see the playbook's Chrome-first ladder).
+4. **Apply.** Combine the helpers' files into one `updates.json` (concatenate `updates` and `add`), then
+   `python ${CLAUDE_SKILL_DIR}/scripts/refresh_trip.py apply <trip folder>/trip.json updates.json --build-to <dashboard>.html`.
+   It backs up `trip.json` to `refresh/`, keeps each old price (`price_prev`) and date, sets
+   `checked_at` to today, logs changes in `trip.price_history`, marks sold-out lines, and prints the tier
+   totals before and after plus the biggest movers. If a default (ticked) stay, flight or car became
+   unavailable, tick the next-best one in that tier by hand (`exclusive_group` allows one per tier), then
+   rebuild. Re-run `fetch_weather.py trip.json` to refresh the forecast (it fills more days as the trip
+   nears), and the exchange rate (`trip.fx`).
+5. **Verify and deliver.** Open the rebuilt dashboard as in Step 5, check the header's "prices checked on"
+   date, then send the file (`SendUserFile`) and email it (Step 6) with a subject such as
+   "Trip plan UPDATED: Bangkok → Pattaya · Sat Oct 31 2026 · from $91". Run `organize_trip.py` last.
+6. **Report what changed:** a four-row table (tier, old total, new total, change), the biggest movers,
+   what is now unavailable, what could not be read, and how many lines are verified today. If nothing moved,
+   say so plainly. Start the run timer (Run timer section) for refreshes too, in `refresh/.run_timer.json`.
+
 ## Resources
 
 - `references/research-playbook.md` — how to search, read, capture URLs, label, and recover from blocks. Read first.
@@ -533,6 +715,8 @@ unless a tool confirmed it.
 - `references/trip-schema.md` — the trip JSON contract the template reads, with a full example.
 - `references/entry-requirements.md` — what US citizens need to enter (visa, ETA, arrival card, vaccines) and how to research it for the red banner.
 - `references/baggage.md` — how to price checked bags, with the airlines' official baggage pages.
+- `scripts/refresh_trip.py` — `scan` lists out-of-date prices by provider; `apply` merges re-read prices into the same trip and shows the before/after totals (Refresh section).
+- `scripts/organize_trip.py` — sorts a trip folder's working files into stays/, flights/, food/, activities/, transport/ and so on (Step 5b).
 - `scripts/email_results.py` — builds the results email (.eml) with subject, summary and attachments (Step 6).
 - `scripts/deeplinks.py` — search links for every provider from route, dates and guests.
 - `scripts/geocode.py` — coordinates for an address via OpenStreetMap (polite, 1 request/second).

@@ -60,14 +60,14 @@ Claude reads are processed by Claude under your own agreement with Anthropic, as
 
 - Don't give an email address, and no email is made or sent.
 - Delete the files the plugin wrote in your working folder to remove its output.
-- Uninstall with `claude plugin uninstall travel-planner@travel-planner`.
+- Uninstall with `claude plugin uninstall travel-planner@shaqs-claude-plugins`.
 
 ## Changes
 
 If this policy changes, the new version is published in this file in the
-[plugin's repository](https://github.com/binaryballer33/travel-planner), with a new date at the top.
+[plugin's repository](https://github.com/binaryballer33/shaqs-claude-plugins), with a new date at the top.
 
 ## Contact
 
 Questions or concerns: open an issue at
-[github.com/binaryballer33/travel-planner/issues](https://github.com/binaryballer33/travel-planner/issues).
+[github.com/binaryballer33/shaqs-claude-plugins/issues](https://github.com/binaryballer33/shaqs-claude-plugins/issues).
